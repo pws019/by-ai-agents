@@ -1,0 +1,8 @@
+# LoRA/QLoRA 训练产物：体积大（单文件常超 GitHub 100MB 限制），不进版本控制
+customer-service-qlora/saves/**/*.safetensors
+customer-service-qlora/saves/**/*.pt
+customer-service-qlora/saves/**/*.pth
+customer-service-qlora/saves/**/checkpoint-*/
+
+# LLaMA-Factory 源码（从 GitHub clone 得到，不需要跟着项目一起提交）
+customer-service-qlora/LLaMA-Factory/

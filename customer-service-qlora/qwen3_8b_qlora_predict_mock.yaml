@@ -1,0 +1,29 @@
+### model
+model_name_or_path: /root/models/Qwen3-8B
+adapter_name_or_path: /root/by-ai-agents/customer-service-qlora/saves/qwen3-8b-qlora-sft-v1
+trust_remote_code: true
+quantization_bit: 4
+quantization_method: bnb
+
+### method
+stage: sft
+do_predict: true
+finetuning_type: lora
+
+### dataset
+eval_dataset: customer_service_zh_mock
+dataset_dir: /root/by-ai-agents/data
+template: qwen3_nothink
+cutoff_len: 2048
+max_samples: 100000
+preprocessing_num_workers: 8
+
+### output
+output_dir: /root/by-ai-agents/customer-service-qlora/saves/predict-mock-v1
+overwrite_output_dir: true
+
+### eval
+per_device_eval_batch_size: 4
+predict_with_generate: true
+max_new_tokens: 256
+report_to: none
