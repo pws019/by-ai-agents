@@ -1,4 +1,4 @@
-# 数据集扩充计划（data-v2）—— QLoRA 训练数据
+# 数据集扩充计划（data）—— QLoRA 训练数据
 
 ## 0. 范围澄清（2026-07-16 重新确定）
 
@@ -80,5 +80,8 @@
 共 23 个场景 → mock 46 条 + sft 460 条。
 
 ## 2. 进度
-23 个场景全部完成。产出见 `data-v2/customer_service_zh_mock.json`（46条）与
-`data-v2/customer_service_zh_sft.json`（460条），生成脚本在 `data-v2/_build/`。
+23 个场景全部完成。产出见 `data/customer_service_zh_mock.json`（46条）与
+`data/customer_service_zh_sft.json`（460条），生成脚本在 `data/_build/`。
+2026-07-16：原 `data-v2` 目录已重命名为 `data`（旧的、超出本期 system prompt 边界的旧版
+`data` 内容已被替换），`data/dataset_info.json` 已重新创建，注册 `customer_service_zh_sft`
+（训练用）与 `customer_service_zh_mock`（评测/冒烟测试用）两个数据集。
