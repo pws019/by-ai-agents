@@ -1,0 +1,22 @@
+{
+  "customer_service_zh_mock": {
+    "file_name": "customer_service_zh_mock.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system",
+      "history": "history"
+    }
+  },
+  "customer_service_zh_sft": {
+    "file_name": "customer_service_zh_sft.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system",
+      "history": "history"
+    }
+  }
+}
