@@ -1,0 +1,25 @@
+{
+  "name": "customer-agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "mastra dev",
+    "build": "mastra build",
+    "typecheck": "tsc --noEmit",
+    "test:agent": "tsx src/scripts/test-agent.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.11",
+    "@mastra/core": "^1.51.0",
+    "@mastra/libsql": "^1.16.0",
+    "@mastra/memory": "^1.23.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "mastra": "^1.19.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
