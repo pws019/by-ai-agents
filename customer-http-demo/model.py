@@ -94,10 +94,11 @@ def generate_stream(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
+    tools: list[dict] | None = None,
 ) -> Iterator[str]:
     """流式生成，逐个文本片段 yield 出来，供 SSE 使用。"""
     load_model()
-    inputs = _build_inputs(messages)
+    inputs = _build_inputs(messages, tools)
 
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     kwargs = _generate_kwargs(inputs, max_new_tokens, temperature, top_p)
