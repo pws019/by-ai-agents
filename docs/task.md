@@ -114,10 +114,19 @@ v1（23 场景，A-E 五大类，46 mock + 460 sft）训练完成后做了两件
   生成，不存在残留问题。
 - [x] mock 测试集需要全部重新生成（已被删除）。
 - [x] 按上面的标准模板重新生成 B/D/E 三类数据，注意同场景内话术收敛、不发散。
-- [ ] 数据生成完毕后，同步到云主机重新跑一版 QLoRA 训练，并用新 mock 集做预测验证。
+- [x] 数据生成完毕后，同步到云主机重新跑一版 QLoRA 训练，并用新 mock 集做预测验证。
 
 ## 3. 进度
 B/D/E 三类共 12 个场景全部生成完毕：mock 48 条 + sft 480 条。产出见
 `data/customer_service_zh_mock.json`、`data/customer_service_zh_sft.json`，生成脚本在
 `data/_build/`。
-下一步：同步到云主机重新跑一版 QLoRA 训练，并用新 mock 集做预测验证（待办清单最后一项）。
+
+**v2 训练结果（2026-07-17，云主机 Qwen3-8B + QLoRA 4bit NF4，180步/3epoch，耗时 12分07秒）**：
+- `train_loss`: 0.2956（v1 是 0.614，本轮明显更低，符合"模板化收敛更容易拟合"的预期）
+- mock 集预测指标：ROUGE-1 93.48 / ROUGE-2 89.67 / ROUGE-L 93.41 / BLEU-4 87.85
+  （v1 分别是 77.48 / 60.02 / 73.10 / 55.16，全面大幅提升）
+- 抽查预测结果：核心句式和用词与标注答案基本一致，只有共情开场白偶尔在同义词库里切换，
+  符合"模板收敛、不发散"的设计目标。
+- 产物已同步回本机：`customer-service-qlora/saves/qwen3-8b-qlora-sft-v1/`（fp32原始版）、
+  `customer-service-qlora/saves/qwen3-8b-qlora-sft-v1-bf16/`（bf16转换版，83.3MB）。
+- 云主机训练用的操作步骤已经整理成通用手册：`docs/云主机QLoRA训练操作手册.md`。

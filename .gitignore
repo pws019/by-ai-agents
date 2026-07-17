@@ -12,3 +12,8 @@ customer-service-qlora/_local_infer/venv/
 customer-service-qlora/_local_infer/models/
 customer-service-qlora/_local_infer/*.log
 customer-service-qlora/_local_infer/__pycache__/
+
+# customer-http-demo：venv 和运行日志不进版本控制
+customer-http-demo/venv/
+customer-http-demo/*.log
+customer-http-demo/__pycache__/
