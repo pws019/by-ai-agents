@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "mastra dev",
+    "dev": "AUTO_BLOCK_EXTERNAL_PROVIDERS=true mastra dev",
     "build": "mastra build",
     "typecheck": "tsc --noEmit",
     "test:agent": "tsx src/scripts/test-agent.ts"
