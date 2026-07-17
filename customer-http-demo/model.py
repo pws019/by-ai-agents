@@ -1,6 +1,9 @@
+import threading
+from typing import Iterator
+
 import torch
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 from config import ADAPTER_PATH, BASE_MODEL_PATH, DEVICE
 
@@ -40,39 +43,69 @@ def load_model() -> None:
     model.eval()
 
 
-def generate(
-    message: str,
-    system: str | None,
-    default_system: str,
-    max_new_tokens: int,
-    temperature: float,
-    top_p: float,
-) -> str:
-    load_model()
-
+def _build_inputs(messages: list[dict]):
     # 所有模型都是基于 chat 模式的，Qwen3-8B 也不例外，先套 chat_template 再生成。
-    messages = [
-        {"role": "system", "content": system or default_system},
-        {"role": "user", "content": message},
-    ]
     prompt = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
         enable_thinking=False,
     )
-    inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
+    return tokenizer([prompt], return_tensors="pt").to(model.device)
+
+
+def _generate_kwargs(inputs, max_new_tokens: int, temperature: float, top_p: float) -> dict:
+    return dict(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=temperature > 0,
+        temperature=temperature if temperature > 0 else None,
+        top_p=top_p,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+    )
+
+
+def generate(
+    messages: list[dict],
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> str:
+    """一次性生成完整回复（非流式）。"""
+    load_model()
+    inputs = _build_inputs(messages)
 
     with torch.inference_mode():
-        generated = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=temperature > 0,
-            temperature=temperature if temperature > 0 else None,
-            top_p=top_p,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-        )
+        generated = model.generate(**_generate_kwargs(inputs, max_new_tokens, temperature, top_p))
 
-    output_ids = generated[0][inputs["input_ids"].shape[1]:]
+    output_ids = generated[0][inputs["input_ids"].shape[1] :]
     return tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+
+def generate_stream(
+    messages: list[dict],
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> Iterator[str]:
+    """流式生成，逐个文本片段 yield 出来，供 SSE 使用。"""
+    load_model()
+    inputs = _build_inputs(messages)
+
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    kwargs = _generate_kwargs(inputs, max_new_tokens, temperature, top_p)
+    kwargs["streamer"] = streamer
+
+    def _run():
+        with torch.inference_mode():
+            model.generate(**kwargs)
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+
+    for chunk in streamer:
+        if chunk:
+            yield chunk
+
+    thread.join()
