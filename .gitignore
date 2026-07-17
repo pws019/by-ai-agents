@@ -23,9 +23,15 @@ customer-agents/node_modules/
 customer-agents/.mastra/
 customer-agents/dist/
 customer-agents/mastra.db*
+customer-agents/src/mastra/public/
 customer-agents/*.log
 
 # customer-logistics-api（Hono mock 服务）：依赖、构建产物、日志
 customer-logistics-api/node_modules/
 customer-logistics-api/dist/
 customer-logistics-api/*.log
+
+# Turborepo 根工作区：依赖、turbo 本地缓存、运行日志
+node_modules/
+.turbo/
+*.log
