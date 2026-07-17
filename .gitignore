@@ -6,3 +6,9 @@ customer-service-qlora/saves/**/checkpoint-*/
 
 # LLaMA-Factory 源码（从 GitHub clone 得到，不需要跟着项目一起提交）
 customer-service-qlora/LLaMA-Factory/
+
+# 本机推理验证用的临时环境：venv、下载的基座模型权重、日志
+customer-service-qlora/_local_infer/venv/
+customer-service-qlora/_local_infer/models/
+customer-service-qlora/_local_infer/*.log
+customer-service-qlora/_local_infer/__pycache__/
