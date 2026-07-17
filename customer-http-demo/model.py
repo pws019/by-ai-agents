@@ -1,3 +1,5 @@
+import json
+import re
 import threading
 from typing import Iterator
 
@@ -43,10 +45,13 @@ def load_model() -> None:
     model.eval()
 
 
-def _build_inputs(messages: list[dict]):
+def _build_inputs(messages: list[dict], tools: list[dict] | None = None):
     # 所有模型都是基于 chat 模式的，Qwen3-8B 也不例外，先套 chat_template 再生成。
+    # tools 透传给 apply_chat_template，让基座模型原生的工具调用能力有机会生效
+    # （Qwen3 的模板会在 tools 非空时注入工具定义，并约定 <tool_call>{...}</tool_call> 输出格式）。
     prompt = tokenizer.apply_chat_template(
         messages,
+        tools=tools,
         tokenize=False,
         add_generation_prompt=True,
         enable_thinking=False,
@@ -71,10 +76,11 @@ def generate(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
+    tools: list[dict] | None = None,
 ) -> str:
     """一次性生成完整回复（非流式）。"""
     load_model()
-    inputs = _build_inputs(messages)
+    inputs = _build_inputs(messages, tools)
 
     with torch.inference_mode():
         generated = model.generate(**_generate_kwargs(inputs, max_new_tokens, temperature, top_p))
@@ -109,3 +115,27 @@ def generate_stream(
             yield chunk
 
     thread.join()
+
+
+_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+
+
+def parse_tool_calls(text: str) -> tuple[str, list[dict]]:
+    """解析 Qwen 原生的 <tool_call>{...}</tool_call> 输出。
+
+    返回 (去掉 tool_call 标签后剩余的文本, 解析出的工具调用列表)。解析失败的块会被跳过，
+    不抛异常——宁可漏检一次工具调用，也不要因为格式不规范让整个请求 500。
+    """
+    calls: list[dict] = []
+    for match in _TOOL_CALL_RE.finditer(text):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        name = payload.get("name")
+        if not name:
+            continue
+        calls.append({"name": name, "arguments": payload.get("arguments", {})})
+
+    remaining = _TOOL_CALL_RE.sub("", text).strip()
+    return remaining, calls

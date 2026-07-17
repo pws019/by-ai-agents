@@ -24,3 +24,8 @@ customer-agents/.mastra/
 customer-agents/dist/
 customer-agents/mastra.db*
 customer-agents/*.log
+
+# customer-logistics-api（Hono mock 服务）：依赖、构建产物、日志
+customer-logistics-api/node_modules/
+customer-logistics-api/dist/
+customer-logistics-api/*.log

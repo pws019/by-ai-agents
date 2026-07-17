@@ -28,10 +28,13 @@ class OpenAIChatMessage(BaseModel):
 
 class OpenAIChatCompletionRequest(BaseModel):
     model: str | None = None
-    messages: list[OpenAIChatMessage]
+    messages: list[dict]
     max_tokens: int = Field(256, ge=1, le=2048)
     temperature: float = Field(
         0.0, ge=0.0, le=2.0, description="默认 0 走贪婪解码，保证客服话术稳定收敛，不随机发散"
     )
     top_p: float = Field(0.9, ge=0.0, le=1.0)
     stream: bool = False
+    tools: list[dict] | None = Field(
+        None, description="OpenAI function-calling 格式的工具定义列表，透传给 apply_chat_template"
+    )

@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 
 import model as model_module
 from config import ADAPTER_PATH, BASE_MODEL_PATH, MODEL_ID, SYSTEM_PROMPT
-from model import generate, generate_stream, get_device, load_model
+from model import generate, generate_stream, get_device, load_model, parse_tool_calls
 from schemas import ChatRequest, ChatResponse, OpenAIChatCompletionRequest
 
 app = FastAPI(title="customer-http-demo", description="Qwen3-8B QLoRA 客服模型 HTTP 接口封装")
@@ -57,30 +57,48 @@ def _ensure_system_message(messages: list[dict]) -> list[dict]:
 @app.post("/v1/chat/completions")
 def chat_completions(req: OpenAIChatCompletionRequest):
     """OpenAI Chat Completions 兼容端点，供 @ai-sdk/openai-compatible（Mastra）调用。"""
-    messages = _ensure_system_message([m.model_dump() for m in req.messages])
+    messages = _ensure_system_message(req.messages)
     model_id = req.model or MODEL_ID
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
     if not req.stream:
-        reply = generate(
+        raw_reply = generate(
             messages=messages,
             max_new_tokens=req.max_tokens,
             temperature=req.temperature,
             top_p=req.top_p,
+            tools=req.tools,
         )
+        content, calls = parse_tool_calls(raw_reply) if req.tools else (raw_reply, [])
+
+        if calls:
+            message = {
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": [
+                    {
+                        "id": f"call_{uuid.uuid4().hex}",
+                        "type": "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                        },
+                    }
+                    for call in calls
+                ],
+            }
+            finish_reason = "tool_calls"
+        else:
+            message = {"role": "assistant", "content": content}
+            finish_reason = "stop"
+
         return {
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
             "model": model_id,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": reply},
-                    "finish_reason": "stop",
-                }
-            ],
+            "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
 
