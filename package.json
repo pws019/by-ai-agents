@@ -5,12 +5,16 @@
   "packageManager": "npm@11.16.0",
   "workspaces": [
     "customer-agents",
+    "customer-embedding-demo",
     "customer-http-demo",
+    "customer-qdrant",
     "customer-logistics-api"
   ],
   "scripts": {
-    "setup": "npm install --workspace=customer-agents && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api",
-    "dev": "turbo run dev"
+    "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api",
+    "dev": "turbo run dev",
+    "qdrant:up": "docker compose -f docker-compose.qdrant.yml up -d",
+    "qdrant:down": "docker compose -f docker-compose.qdrant.yml down"
   },
   "devDependencies": {
     "turbo": "^2.10.5"

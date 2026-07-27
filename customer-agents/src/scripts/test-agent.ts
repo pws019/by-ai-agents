@@ -1,7 +1,7 @@
 import { mastra } from "../mastra";
 
 async function main() {
-  const agent = mastra.getAgentById("customerServiceAgent");
+  const agent = mastra.getAgentById("customer-service-agent");
 
   const cases = [
     "我的快递到哪了？订单号OD202607170099。",

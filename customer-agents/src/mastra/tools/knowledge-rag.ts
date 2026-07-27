@@ -1,15 +1,19 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 
+import { embedQuery } from "../rag/embedding-client";
+import { searchKnowledge } from "../rag/qdrant-client";
+
 /**
- * 知识库检索工具（占位实现）。
+ * Agent 可调用的 RAG 工具。
  *
- * 知识库（商品说明/使用方法/保养方式/售后政策/退换货流程/质保等）暂未接入，这里先留空，
- * 始终返回“未命中”，让 agent 按 instructions 里第 6 条的规则处理：说明暂未查到准确依据，
- * 并建议转人工或补充商品/订单信息。不要在这里编造检索结果。
- *
- * 后续接入真实知识库时，只需要替换 execute 内部实现，inputSchema/outputSchema 保持不变即可，
- * agent 和 instructions 都不需要跟着改。
+ * 运行时链路：
+ * 用户问“冰箱冷藏室积水怎么办”
+ * -> Agent 判断这是知识类问题，调用 knowledgeRagTool
+ * -> 工具把 query 转成向量
+ * -> 用向量去 Qdrant 搜相似维修场景
+ * -> 把命中的 content/source 还给 Agent
+ * -> Agent 再基于这些依据组织客服回复
  */
 export const knowledgeRagTool = createTool({
   id: "knowledge-rag-tool",
@@ -31,12 +35,34 @@ export const knowledgeRagTool = createTool({
       .describe("命中的知识片段和来源，未命中时为空数组"),
     note: z.string().describe("附加说明，例如未接入知识库的提示"),
   }),
-  execute: async () => {
-    // TODO(Phase 4): 接入真实知识库检索后替换这里的实现。
-    return {
-      hasResults: false,
-      relevantContext: [],
-      note: "知识库尚未接入，本次检索始终返回未命中。",
-    };
+  execute: async ({ query }) => {
+    try {
+      // 1. 用户问题 -> 查询向量。
+      const vector = await embedQuery(query);
+
+      // 2. 查询向量 -> Qdrant 相似度搜索。
+      const results = await searchKnowledge(vector);
+
+      // 3. 把 Qdrant payload 整理成 tool output，交给 Agent/LLM 使用。
+      return {
+        hasResults: results.length > 0,
+        relevantContext: results.map((result) => ({
+          content: result.payload.content,
+          source: `${result.payload.source}#${result.payload.title}`,
+        })),
+        note:
+          results.length > 0
+            ? `命中 ${results.length} 条维修知识片段。`
+            : "知识库未命中相关维修知识片段。",
+      };
+    } catch (error) {
+      // 工具失败时也不能编造知识；明确告诉 Agent 检索失败，让它按 system prompt 处理。
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        hasResults: false,
+        relevantContext: [],
+        note: `知识库检索失败：${message}`,
+      };
+    }
   },
 });

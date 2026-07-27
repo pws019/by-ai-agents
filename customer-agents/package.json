@@ -7,7 +7,8 @@
     "dev": "AUTO_BLOCK_EXTERNAL_PROVIDERS=true mastra dev",
     "build": "mastra build",
     "typecheck": "tsc --noEmit",
-    "test:agent": "tsx src/scripts/test-agent.ts"
+    "test:agent": "tsx src/scripts/test-agent.ts",
+    "rag:ingest": "tsx src/scripts/ingest-rag-knowledge.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.11",
