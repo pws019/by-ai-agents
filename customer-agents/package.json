@@ -15,6 +15,8 @@
     "@mastra/core": "^1.51.0",
     "@mastra/libsql": "^1.16.0",
     "@mastra/memory": "^1.23.0",
+    "@mastra/qdrant": "^1.1.1",
+    "@mastra/rag": "^2.4.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {

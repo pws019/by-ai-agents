@@ -27,13 +27,14 @@ npm run setup
 2. `customer-embedding-demo` 创建/更新 Python venv 并 `pip install -r requirements.txt`
 3. `customer-http-demo` 创建/更新 Python venv 并 `pip install -r requirements.txt`
 4. `npm install --workspace=customer-logistics-api`
+5. 临时启动 Qdrant 和 embedding 服务，把 `rag-knowledge/*.md` 入库，完成后关闭临时服务
 
 注意：两个 Python 服务默认需要本机有 `python3.11`（可用 `PYTHON_BIN` 环境变量指定别的
 解释器路径）。
 
-`customer-embedding-demo` 默认使用 `Qwen/Qwen3-Embedding-0.6B`，第一次启动时会通过
-`sentence-transformers` 下载模型。生产或离线环境建议提前下载模型，并用
-`EMBEDDING_MODEL_PATH` 指向本地目录。
+`customer-embedding-demo` 默认使用仓库里的本地模型目录
+`customer-service-qlora/_local_infer/models/Qwen3-Embedding-0.6B`。如果要换成其他目录，
+用 `EMBEDDING_MODEL_PATH` 覆盖。
 
 `customer-http-demo` 需要提前把 Qwen3-8B 基座模型和训练好的 LoRA adapter 放到
 `customer-http-demo/config.py` 里配置的默认路径（或用环境变量 `BASE_MODEL_PATH` /
@@ -55,16 +56,11 @@ customer-embedding-demo `:8080`、customer-http-demo `:8123`、customer-logistic
 
 ## RAG 入库
 
-日常开发时，直接启动所有服务：
+`npm run setup` 会自动执行一次入库。后续如果只改了 `rag-knowledge/*.md`，可以在服务已启动时
+单独重建知识库：
 
 ```bash
-npm run dev
-```
-
-把 `rag-knowledge/*.md` 写入 Qdrant：
-
-```bash
-npm run rag:ingest --workspace=customer-agents
+npm run rag:ingest
 ```
 
 入库完成后，`customer-agents` 的 `knowledgeRagTool` 会把用户问题发送到

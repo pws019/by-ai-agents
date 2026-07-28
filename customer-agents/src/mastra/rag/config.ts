@@ -22,11 +22,12 @@ export const ragConfig = {
   topK: Number(process.env.RAG_TOP_K ?? "5"),
   // 分数太低的结果直接丢掉，避免拿不相关文档喂给 LLM。
   scoreThreshold: Number(process.env.RAG_SCORE_THRESHOLD ?? "0.35"),
-  // 默认按 TEI 风格 /embed 接口调用，也支持 openai-compatible /v1/embeddings。
-  embeddingProvider: process.env.EMBEDDING_PROVIDER ?? "tei",
+  // 当前 Mastra RAG 接入统一走 OpenAI-compatible /v1/embeddings。
   embeddingBaseUrl: process.env.EMBEDDING_BASE_URL ?? "http://127.0.0.1:8080",
   embeddingModel: process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B",
   embeddingApiKey: process.env.EMBEDDING_API_KEY ?? "local-not-used",
+  // 向量召回先放大候选集，再由 rerank 精排回 topK。
+  rerankCandidateMultiplier: Number(process.env.RAG_RERANK_CANDIDATE_MULTIPLIER ?? "5"),
   // Qwen embedding 支持 instruction-aware 检索：文档和问题用不同 instruction 会更贴近检索任务。
   documentInstruction:
     process.env.RAG_DOCUMENT_INSTRUCTION ??

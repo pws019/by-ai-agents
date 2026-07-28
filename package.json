@@ -11,10 +11,9 @@
     "customer-logistics-api"
   ],
   "scripts": {
-    "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api",
+    "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api && node scripts/setup-rag-ingest.mjs",
     "dev": "turbo run dev",
-    "qdrant:up": "docker compose -f docker-compose.qdrant.yml up -d",
-    "qdrant:down": "docker compose -f docker-compose.qdrant.yml down"
+    "rag:ingest": "npm run rag:ingest --workspace=customer-agents"
   },
   "devDependencies": {
     "turbo": "^2.10.5"

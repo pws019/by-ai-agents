@@ -57,22 +57,21 @@ Qwen/Qwen3-Embedding-0.6B
 docker compose -f ../docker-compose.qdrant.yml up -d
 ```
 
-启动 Qwen embedding 服务时，建议用 OpenAI-compatible 或 TEI 风格 HTTP 服务。本项目默认按
-TEI 的 `/embed` 接口调用：
+启动 Qwen embedding 服务时，需要提供 OpenAI-compatible `/v1/embeddings` 接口。本项目的
+`customer-embedding-demo` 已同时提供 `/embed` 和 `/v1/embeddings`，RAG 代码现在统一调用后者：
 
 ```text
-EMBEDDING_PROVIDER=tei
 EMBEDDING_BASE_URL=http://127.0.0.1:8080
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
 QDRANT_VECTOR_SIZE=1024
 ```
 
-如果 embedding 服务提供 OpenAI-compatible `/v1/embeddings`，改成：
+检索会先召回 `RAG_TOP_K * RAG_RERANK_CANDIDATE_MULTIPLIER` 条候选，再通过 Mastra rerank
+精排回 `RAG_TOP_K` 条：
 
 ```text
-EMBEDDING_PROVIDER=openai-compatible
-EMBEDDING_BASE_URL=http://127.0.0.1:8080
-EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+RAG_TOP_K=5
+RAG_RERANK_CANDIDATE_MULTIPLIER=5
 ```
 
 维修知识入库：
