@@ -18,5 +18,41 @@
       "system": "system",
       "history": "history"
     }
+  },
+  "customer_service_zh_sft_tools": {
+    "file_name": "customer_service_zh_sft_tools.json",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "conversations",
+      "system": "system",
+      "tools": "tools"
+    },
+    "tags": {
+      "role_tag": "from",
+      "content_tag": "value",
+      "user_tag": "human",
+      "assistant_tag": "gpt",
+      "observation_tag": "observation",
+      "function_tag": "function_call",
+      "system_tag": "system"
+    }
+  },
+  "customer_service_zh_sft_tools_mock": {
+    "file_name": "customer_service_zh_sft_tools_mock.json",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "conversations",
+      "system": "system",
+      "tools": "tools"
+    },
+    "tags": {
+      "role_tag": "from",
+      "content_tag": "value",
+      "user_tag": "human",
+      "assistant_tag": "gpt",
+      "observation_tag": "observation",
+      "function_tag": "function_call",
+      "system_tag": "system"
+    }
   }
 }

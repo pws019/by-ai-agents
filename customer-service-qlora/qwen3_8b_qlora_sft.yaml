@@ -14,7 +14,7 @@ quantization_bit: 4
 quantization_method: bnb
 
 ### dataset
-dataset: customer_service_zh_sft
+dataset: customer_service_zh_sft,customer_service_zh_sft_tools
 dataset_dir: /root/by-ai-agents/data
 template: qwen3_nothink
 cutoff_len: 2048

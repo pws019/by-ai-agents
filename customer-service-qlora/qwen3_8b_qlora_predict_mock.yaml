@@ -11,7 +11,7 @@ do_predict: true
 finetuning_type: lora
 
 ### dataset
-eval_dataset: customer_service_zh_mock
+eval_dataset: customer_service_zh_mock,customer_service_zh_sft_tools_mock
 dataset_dir: /root/by-ai-agents/data
 template: qwen3_nothink
 cutoff_len: 2048

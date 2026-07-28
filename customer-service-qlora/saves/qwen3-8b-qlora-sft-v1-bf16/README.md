@@ -18,7 +18,7 @@ should probably proofread and complete it, then remove this comment. -->
 
 # qwen3-8b-qlora-sft-v1
 
-This model is a fine-tuned version of [/root/models/Qwen3-8B](https://huggingface.co//root/models/Qwen3-8B) on the customer_service_zh_sft dataset.
+This model is a fine-tuned version of [/root/models/Qwen3-8B](https://huggingface.co//root/models/Qwen3-8B) on the customer_service_zh_sft and the customer_service_zh_sft_tools datasets.
 
 ## Model description
 
