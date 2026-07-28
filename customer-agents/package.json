@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "AUTO_BLOCK_EXTERNAL_PROVIDERS=true mastra dev",
     "build": "mastra build",
     "typecheck": "tsc --noEmit",

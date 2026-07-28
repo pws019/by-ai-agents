@@ -18,6 +18,10 @@ customer-http-demo/venv/
 customer-http-demo/*.log
 customer-http-demo/__pycache__/
 
+# customer-embedding-demo：本地 Python 环境和缓存不进版本控制
+customer-embedding-demo/venv/
+customer-embedding-demo/__pycache__/
+
 # customer-agents（Mastra 应用）：依赖、构建产物、本地 sqlite 记忆库、日志
 customer-agents/node_modules/
 customer-agents/.mastra/

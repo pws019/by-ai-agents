@@ -28,11 +28,11 @@ export const logisticsLookupTool = createTool({
   }),
   outputSchema: z.object({
     found: z.boolean().describe("是否查询到该订单的物流信息"),
-    status: z.string().optional().describe("物流状态，例如 in_transit / delivered / exception"),
-    lastLocation: z.string().optional().describe("最新物流节点所在位置"),
-    lastUpdatedAt: z.string().optional().describe("最新物流节点更新时间"),
-    courier: z.string().optional().describe("承运快递公司"),
-    trackingNumber: z.string().optional().describe("运单号"),
+    status: z.string().describe("物流状态，例如 in_transit / delivered / exception；没有结果时为空字符串"),
+    lastLocation: z.string().describe("最新物流节点所在位置；没有结果时为空字符串"),
+    lastUpdatedAt: z.string().describe("最新物流节点更新时间；没有结果时为空字符串"),
+    courier: z.string().describe("承运快递公司；没有结果时为空字符串"),
+    trackingNumber: z.string().describe("运单号；没有结果时为空字符串"),
     message: z.string().describe("查询结果说明，查询失败时说明具体原因"),
   }),
   execute: async ({ orderId }) => {
@@ -46,6 +46,11 @@ export const logisticsLookupTool = createTool({
       if (response.status === 404) {
         return {
           found: false,
+          status: "",
+          lastLocation: "",
+          lastUpdatedAt: "",
+          courier: "",
+          trackingNumber: "",
           message: `未查询到订单号 ${orderId} 对应的物流信息，请确认订单号是否正确。`,
         };
       }
@@ -53,6 +58,11 @@ export const logisticsLookupTool = createTool({
       if (!response.ok) {
         return {
           found: false,
+          status: "",
+          lastLocation: "",
+          lastUpdatedAt: "",
+          courier: "",
+          trackingNumber: "",
           message: `物流查询服务返回异常状态码 ${response.status}，建议稍后重试或转人工核实。`,
         };
       }
@@ -67,17 +77,22 @@ export const logisticsLookupTool = createTool({
 
       return {
         found: true,
-        status: data.status,
-        lastLocation: data.lastLocation,
-        lastUpdatedAt: data.lastUpdatedAt,
-        courier: data.courier,
-        trackingNumber: data.trackingNumber,
+        status: data.status ?? "",
+        lastLocation: data.lastLocation ?? "",
+        lastUpdatedAt: data.lastUpdatedAt ?? "",
+        courier: data.courier ?? "",
+        trackingNumber: data.trackingNumber ?? "",
         message: "查询成功。",
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return {
         found: false,
+        status: "",
+        lastLocation: "",
+        lastUpdatedAt: "",
+        courier: "",
+        trackingNumber: "",
         message: `物流查询服务暂时无法访问（${reason}），建议稍后重试或转人工核实，不要编造物流状态。`,
       };
     } finally {

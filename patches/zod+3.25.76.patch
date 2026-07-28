@@ -1,0 +1,26 @@
+diff --git a/node_modules/zod/v4/core/to-json-schema.cjs b/node_modules/zod/v4/core/to-json-schema.cjs
+index 220ddcc..9a37c79 100644
+--- a/node_modules/zod/v4/core/to-json-schema.cjs
++++ b/node_modules/zod/v4/core/to-json-schema.cjs
+@@ -9,7 +9,7 @@ class JSONSchemaGenerator {
+         this.counter = 0;
+         this.metadataRegistry = params?.metadata ?? registries_js_1.globalRegistry;
+         this.target = params?.target ?? "draft-2020-12";
+-        this.unrepresentable = params?.unrepresentable ?? "throw";
++        this.unrepresentable = params?.unrepresentable ?? "any";
+         this.override = params?.override ?? (() => { });
+         this.io = params?.io ?? "output";
+         this.seen = new Map();
+diff --git a/node_modules/zod/v4/core/to-json-schema.js b/node_modules/zod/v4/core/to-json-schema.js
+index 1c65f4f..5a0849d 100644
+--- a/node_modules/zod/v4/core/to-json-schema.js
++++ b/node_modules/zod/v4/core/to-json-schema.js
+@@ -5,7 +5,7 @@ export class JSONSchemaGenerator {
+         this.counter = 0;
+         this.metadataRegistry = params?.metadata ?? globalRegistry;
+         this.target = params?.target ?? "draft-2020-12";
+-        this.unrepresentable = params?.unrepresentable ?? "throw";
++        this.unrepresentable = params?.unrepresentable ?? "any";
+         this.override = params?.override ?? (() => { });
+         this.io = params?.io ?? "output";
+         this.seen = new Map();

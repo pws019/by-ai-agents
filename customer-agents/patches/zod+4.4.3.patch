@@ -1,0 +1,40 @@
+diff --git a/node_modules/zod/v4/core/to-json-schema.cjs b/node_modules/zod/v4/core/to-json-schema.cjs
+index 9f1f62c..79ec6e2 100644
+--- a/node_modules/zod/v4/core/to-json-schema.cjs
++++ b/node_modules/zod/v4/core/to-json-schema.cjs
+@@ -70,9 +70,13 @@ function process(schema, ctx, _params = { path: [], schemaPath: [] }) {
+             const _json = result.schema;
+             const processor = ctx.processors[def.type];
+             if (!processor) {
+-                throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
++                if (ctx.unrepresentable === "throw") {
++                    throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
++                }
++            }
++            else {
++                processor(schema, ctx, _json, params);
+             }
+-            processor(schema, ctx, _json, params);
+         }
+         const parent = schema._zod.parent;
+         if (parent) {
+diff --git a/node_modules/zod/v4/core/to-json-schema.js b/node_modules/zod/v4/core/to-json-schema.js
+index 68d49aa..f902662 100644
+--- a/node_modules/zod/v4/core/to-json-schema.js
++++ b/node_modules/zod/v4/core/to-json-schema.js
+@@ -63,9 +63,13 @@ export function process(schema, ctx, _params = { path: [], schemaPath: [] }) {
+             const _json = result.schema;
+             const processor = ctx.processors[def.type];
+             if (!processor) {
+-                throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
++                if (ctx.unrepresentable === "throw") {
++                    throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
++                }
++            }
++            else {
++                processor(schema, ctx, _json, params);
+             }
+-            processor(schema, ctx, _json, params);
+         }
+         const parent = schema._zod.parent;
+         if (parent) {

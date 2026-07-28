@@ -11,11 +11,13 @@
     "customer-logistics-api"
   ],
   "scripts": {
+    "postinstall": "patch-package",
     "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api && node scripts/setup-rag-ingest.mjs",
     "dev": "turbo run dev",
     "rag:ingest": "npm run rag:ingest --workspace=customer-agents"
   },
   "devDependencies": {
+    "patch-package": "^8.0.1",
     "turbo": "^2.10.5"
   }
 }
