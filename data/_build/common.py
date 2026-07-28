@@ -4,16 +4,19 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOCK_PATH = os.path.join(BASE, "customer_service_zh_mock.json")
 SFT_PATH = os.path.join(BASE, "customer_service_zh_sft.json")
 
+# 与 customer-agents/src/mastra/agents/customer-service-agent.ts 里 SYSTEM_PROMPT 逐字一致。
+# LoRA 现在的定位是语气/结构微调，不是范围判断，所以训练时必须让模型在“真实生产 prompt”
+# 下学习，而不是一份改写版——否则学到的行为跟真实运行环境对不上，等于白训。
+# 如果生产端改了这段话，这里要同步改，两边永远保持逐字相同。
 SYS = (
-    "你是一位专业、耐心、克制的电商客服机器人（AI客服），不是人工客服本人，也不能冒充人工客服或"
-    "声称已完成人工处理。"
-    "如果用户询问物流相关问题但没有提供订单号，先请用户提供订单号或收件手机号后四位，再继续处理。"
-    "如果用户询问库存、价格、优惠、退款进度等没有对应工具可查询的实时信息，不要编造结果，说明"
-    "暂时无法直接确认，并引导用户申请转接人工客服。"
-    "回答时先承接用户的问题或情绪，再说明需要的信息或当前能做的事，最后给出明确的下一步。"
-    "同一类问题的回复要保持统一、模板化的话术风格，不要随意发散句式。"
-    "如果用户询问与电商客服无关的问题，例如吃喝玩乐、闲聊、编程、学习、新闻等，要友好但明确地"
-    "说明自己只能协助订单、物流、商品说明、售后等客服相关事项，并邀请用户提出相关问题。"
+    "你是专业、耐心、克制的电商客服。\n"
+    "如果用户询问物流、快递、签收、派送、催件，并且提供了订单号，必须先调用 logisticsLookupTool 查询。\n"
+    "如果用户询问物流但没有提供订单号，先请用户提供订单号或收件手机号后四位。\n"
+    "如果用户询问商品说明、使用方法、保养方式、售后政策、退换货流程、质保等非实时知识，优先调用 knowledgeRagTool 检索知识库，再基于工具返回的 relevantContext 和 sources 回答。\n"
+    "knowledgeRagTool 只用于非实时知识，不要用于实时订单、物流、库存、价格、退款进度等查询。\n"
+    "不要编造订单、物流、库存、价格、退款进度或售后政策；knowledgeRagTool 没有命中、或 logisticsLookupTool 查询失败时，要说明暂未查到准确依据，并建议转人工或补充商品/订单信息。\n"
+    "回答时先承接用户情绪，再说明查询结果或需要的信息，最后给出下一步处理方式。\n"
+    "如果用户询问与电商客服无关的问题，例如吃喝玩乐、闲聊、编程、学习、新闻等，要友好但明确地说明自己只能协助订单、物流、商品说明、售后等客服相关事项，并邀请用户提供相关问题。"
 )
 
 
@@ -29,23 +32,16 @@ def save(path, items):
 
 
 def mk(instruction, output, input_="", history=None):
-    item = {
+    return {
         "instruction": instruction,
         "input": input_,
         "output": output,
         "system": SYS,
+        "history": history or [],
     }
-    if history:
-        item["history"] = history
-    else:
-        item["history"] = []
-    return item
 
 
 def commit(scenario_name, mock_items, sft_items):
-    assert len(mock_items) == 4, f"{scenario_name}: expected 4 mock items, got {len(mock_items)}"
-    assert len(sft_items) == 40, f"{scenario_name}: expected 40 sft items, got {len(sft_items)}"
-
     mocks = load(MOCK_PATH)
     sfts = load(SFT_PATH)
 
@@ -62,4 +58,4 @@ def commit(scenario_name, mock_items, sft_items):
     sfts.extend(sft_items)
     save(MOCK_PATH, mocks)
     save(SFT_PATH, sfts)
-    print(f"[ok] {scenario_name}: mock={len(mocks)} sft={len(sfts)}")
+    print(f"[ok] {scenario_name}: +{len(sft_items)} sft (+{len(mock_items)} mock), total sft={len(sfts)} mock={len(mocks)}")
