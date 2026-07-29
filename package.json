@@ -8,11 +8,12 @@
     "customer-embedding-demo",
     "customer-http-demo",
     "customer-qdrant",
-    "customer-logistics-api"
+    "customer-logistics-api",
+    "customer-frontend"
   ],
   "scripts": {
     "postinstall": "patch-package",
-    "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api && node scripts/setup-rag-ingest.mjs",
+    "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api && npm install --workspace=customer-frontend && node scripts/setup-rag-ingest.mjs",
     "dev": "turbo run dev",
     "rag:ingest": "npm run rag:ingest --workspace=customer-agents"
   },

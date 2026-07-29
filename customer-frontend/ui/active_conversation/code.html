@@ -1,0 +1,311 @@
+<!DOCTYPE html><html class="light" lang="en" style=""><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "background": "#faf8ff",
+                    "surface-container-lowest": "#ffffff",
+                    "surface-container-highest": "#e1e2ed",
+                    "on-secondary-fixed-variant": "#38485d",
+                    "tertiary-fixed-dim": "#ffb596",
+                    "outline": "#737686",
+                    "on-secondary": "#ffffff",
+                    "on-background": "#191b23",
+                    "on-primary-fixed": "#00174b",
+                    "on-tertiary-fixed": "#360f00",
+                    "on-tertiary-fixed-variant": "#7d2d00",
+                    "tertiary-container": "#bc4800",
+                    "on-primary": "#ffffff",
+                    "on-tertiary": "#ffffff",
+                    "primary-fixed-dim": "#b4c5ff",
+                    "inverse-primary": "#b4c5ff",
+                    "primary": "#004ac6",
+                    "surface-container-low": "#f3f3fe",
+                    "surface-container-high": "#e7e7f3",
+                    "surface": "#faf8ff",
+                    "surface-dim": "#d9d9e5",
+                    "on-tertiary-container": "#ffede6",
+                    "on-surface-variant": "#434655",
+                    "secondary-fixed-dim": "#b7c8e1",
+                    "on-error": "#ffffff",
+                    "surface-tint": "#0053db",
+                    "on-secondary-container": "#54647a",
+                    "error": "#ba1a1a",
+                    "error-container": "#ffdad6",
+                    "surface-variant": "#e1e2ed",
+                    "tertiary-fixed": "#ffdbcd",
+                    "primary-container": "#2563eb",
+                    "on-primary-fixed-variant": "#003ea8",
+                    "secondary-fixed": "#d3e4fe",
+                    "surface-container": "#ededf9",
+                    "inverse-surface": "#2e3039",
+                    "inverse-on-surface": "#f0f0fb",
+                    "outline-variant": "#c3c6d7",
+                    "on-primary-container": "#eeefff",
+                    "surface-bright": "#faf8ff",
+                    "secondary-container": "#d0e1fb",
+                    "secondary": "#505f76",
+                    "primary-fixed": "#dbe1ff",
+                    "on-error-container": "#93000a",
+                    "on-secondary-fixed": "#0b1c30",
+                    "on-surface": "#191b23",
+                    "tertiary": "#943700"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "container-max-width": "800px",
+                    "gutter": "16px",
+                    "inset-padding": "12px",
+                    "stack-gap": "24px",
+                    "sidebar-width": "280px"
+            },
+            "fontFamily": {
+                    "headline-sm": ["Inter"],
+                    "label-md": ["Inter"],
+                    "body-md": ["Inter"],
+                    "body-sm": ["Inter"],
+                    "label-sm": ["Inter"]
+            },
+            "fontSize": {
+                    "headline-sm": ["18px", {"lineHeight": "28px", "fontWeight": "600"}],
+                    "label-md": ["14px", {"lineHeight": "20px", "fontWeight": "500"}],
+                    "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "body-sm": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .chat-scroll::-webkit-scrollbar {
+            width: 4px;
+        }
+        .chat-scroll::-webkit-scrollbar-thumb {
+            background: #e1e2ed;
+            border-radius: 10px;
+        }
+        .typing-dot {
+            animation: typing 1.4s infinite ease-in-out both;
+        }
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes typing {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md">
+<!-- Sidebar (Shared Component SideNavBar) -->
+<aside class="w-sidebar-width h-screen fixed left-0 top-0 border-r border-outline-variant flex flex-col py-inset-padding bg-background">
+<div class="px-gutter mb-8">
+<h1 class="font-headline-sm text-headline-sm font-bold text-primary">Customer Service</h1>
+<p class="text-label-sm text-secondary">AI Playground</p>
+</div>
+<div class="px-4 mb-6">
+<button class="w-full bg-primary text-on-primary py-3 px-4 rounded-xl font-label-md flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[0.98]">
+<span class="material-symbols-outlined text-[20px]">add</span>
+                New Chat
+            </button>
+</div>
+<nav class="flex-1 overflow-y-auto px-2 space-y-1 chat-scroll">
+<div class="px-2 pb-2">
+<p class="text-[11px] font-bold text-outline uppercase tracking-wider mb-2">Recent Sessions</p>
+<!-- Active Item -->
+<div class="bg-surface-container-high text-primary border-l-2 border-primary rounded-r-lg p-3 cursor-pointer transition-colors group flex items-center">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-[20px]">package_2</span>
+<div class="flex-1 overflow-hidden">
+<p class="font-label-md truncate">Order #12345 Status</p>
+<p class="text-[11px] text-secondary">2 mins ago</p>
+</div>
+</div>
+<button class="material-symbols-outlined text-[18px] text-secondary hover:text-error opacity-0 group-hover:opacity-100 transition-opacity ml-auto" title="Delete session" onclick="this.parentElement.style.opacity='0.5'; this.innerText='delete_forever'; this.classList.add('text-error'); setTimeout(() =&gt; this.parentElement.remove(), 500); event.stopPropagation();">delete</button></div>
+<!-- Inactive Items -->
+<div class="text-secondary hover:bg-surface-container-low rounded-lg p-3 cursor-pointer transition-colors group mt-1">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-[20px]">assignment_return</span>
+<div class="flex-1 overflow-hidden">
+<p class="font-label-md truncate">Return Policy Inquiry</p>
+<p class="text-[11px] text-outline">1 hour ago</p>
+</div>
+<span class="material-symbols-outlined opacity-0 group-hover:opacity-100 text-[16px]">more_horiz</span>
+</div>
+<button class="material-symbols-outlined text-[18px] text-secondary hover:text-error opacity-0 group-hover:opacity-100 transition-opacity ml-auto" title="Delete session" onclick="this.parentElement.style.opacity='0.5'; this.innerText='delete_forever'; this.classList.add('text-error'); setTimeout(() =&gt; this.parentElement.remove(), 500); event.stopPropagation();">delete</button></div>
+<div class="text-secondary hover:bg-surface-container-low rounded-lg p-3 cursor-pointer transition-colors group mt-1">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-[20px]">local_shipping</span>
+<div class="flex-1 overflow-hidden">
+<p class="font-label-md truncate">Shipping Rates</p>
+<p class="text-[11px] text-outline">3 hours ago</p>
+</div>
+<span class="material-symbols-outlined opacity-0 group-hover:opacity-100 text-[16px]">more_horiz</span>
+</div>
+<button class="material-symbols-outlined text-[18px] text-secondary hover:text-error opacity-0 group-hover:opacity-100 transition-opacity ml-auto" title="Delete session" onclick="this.parentElement.style.opacity='0.5'; this.innerText='delete_forever'; this.classList.add('text-error'); setTimeout(() =&gt; this.parentElement.remove(), 500); event.stopPropagation();">delete</button></div>
+</div>
+</nav>
+<div class="mt-auto px-4 pt-4 border-t border-outline-variant">
+<div class="flex items-center gap-3 p-2 text-secondary hover:bg-surface-container-low rounded-lg cursor-pointer transition-colors">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-label-md">Settings</span>
+</div>
+<div class="flex items-center gap-3 p-2 text-secondary hover:bg-surface-container-low rounded-lg cursor-pointer transition-colors mt-1">
+<span class="material-symbols-outlined">rate_review</span>
+<span class="font-label-md">Feedback</span>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-sidebar-width flex flex-col h-screen">
+<!-- Header (Shared Component TopNavBar) -->
+<header class="flex justify-between items-center h-16 px-gutter bg-surface border-b border-outline-variant sticky top-0 z-10">
+<div class="flex items-center gap-4">
+<div class="md:hidden">
+<span class="material-symbols-outlined text-on-surface">menu</span>
+</div>
+<h2 class="font-headline-sm text-headline-sm font-semibold text-on-surface">Order #12345 Status</h2>
+</div>
+<div class="flex items-center gap-4">
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined">history</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<div class="w-8 h-8 rounded-full overflow-hidden border border-outline-variant">
+<img class="w-full h-full object-cover" data-alt="A professional headshot of a friendly customer service representative in a clean corporate environment. The background is a soft-focus modern office with cool blue and white tones. The lighting is bright and even, reinforcing a light-mode aesthetic of reliability and precision." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDqG-lHaDQhzbxk-Me66GGt0pj7tQmxF20iDM2bEaRSjHRbMZsu_bp-ibp7y83LLkZHTOq2NuH0lnTE2G47IACGYL2QPMz7XTwAPq5AvbrTHAlUbFbnykPabCCaMCwAU1E__pzRd1YvaRi4A4T8SwGZB9jgHh4SWlIB2pxVzOFbpWpPUZyKgpZT0icl5k3H5W6VwEJyAwcGodG9_UEK4hByMcBQ_xX6GYVcjCLGH8Vu0SzLKCy1OwD8">
+</div>
+</div>
+</header>
+<!-- Chat Area -->
+<section class="flex-1 overflow-y-auto chat-scroll py-8 px-4 sm:px-8">
+<div class="max-w-container-max-width mx-auto flex flex-col gap-stack-gap">
+<!-- Timestamp Divider -->
+<div class="flex justify-center my-4">
+<span class="px-4 py-1 rounded-full bg-surface-container text-label-sm text-secondary">Today, 2:45 PM</span>
+</div>
+<!-- User Message -->
+<div class="flex justify-end w-full">
+<div class="max-w-[80%] bg-primary text-on-primary p-4 rounded-t-xl rounded-bl-xl shadow-sm">
+<p class="font-body-md">Where is my package?</p>
+</div>
+</div>
+<!-- Agent Message 1 (Thinking State) -->
+<div class="flex justify-start w-full">
+<div class="flex gap-4 max-w-[85%]">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-[18px] text-primary" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<div class="flex flex-col gap-2">
+<div class="bg-surface-container-low text-on-surface-variant p-4 rounded-t-xl rounded-br-xl">
+<p class="font-body-md italic opacity-80">I'm checking that for you...</p>
+</div>
+<!-- Intermediate Status -->
+<div class="flex items-center gap-3 px-4 py-2 border border-outline-variant rounded-full w-fit bg-surface-container-lowest">
+<span class="flex gap-1">
+<span class="w-1.5 h-1.5 bg-primary rounded-full typing-dot"></span>
+<span class="w-1.5 h-1.5 bg-primary rounded-full typing-dot"></span>
+<span class="w-1.5 h-1.5 bg-primary rounded-full typing-dot"></span>
+</span>
+<span class="text-label-sm text-secondary">Fetching logistics data...</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Agent Message 2 (Response) -->
+<div class="flex justify-start w-full">
+<div class="flex gap-4 max-w-[85%]">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-[18px] text-primary" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<div class="flex flex-col gap-2">
+<div class="bg-surface-container-low text-on-surface p-4 rounded-t-xl rounded-br-xl shadow-sm border border-surface-container">
+<p class="font-body-md leading-relaxed">Your package is currently in transit and is expected to arrive by <strong class="text-primary">tomorrow evening</strong>.</p>
+<!-- Decorative Map Placeholder for context -->
+<div class="mt-4 relative rounded-lg overflow-hidden border border-outline-variant h-32 bg-surface-container">
+<div class="absolute inset-0 opacity-40">
+<img class="w-full h-full object-cover" data-alt="A clean, minimalist digital map showing a delivery route through a metropolitan area. The map uses a light color palette with soft grays, whites, and primary blue lines representing the transit path. The style is high-utility, professional, and corporate, emphasizing clarity over decoration." data-location="Chicago" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCileGFrMkmxTUR8WTnUzzwYK8fScHf0By8TVaKA5_FrAHwIWXwiqq9ZwXjsYVfDqod7CpJDSckNOo7wnLw2CjE-rSLjk2jh-PNUd7I2NCJaJdRxcfWgUDy6TnMTjd8IVN56N7bnVE8DtU07z5EEJQBoRhrv16Mjkk0KTjHQoZtCEbd4JzDzFAHjFCcSCYlUjQYq0YyzlPyAMrhauWwnPY3hui0LdegrxRE4Gbs22u2voAzrf9YHKlo">
+</div>
+<div class="absolute inset-0 flex items-center justify-center">
+<div class="bg-surface-container-lowest px-3 py-1.5 rounded shadow-lg border border-outline-variant flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[18px]">local_shipping</span>
+<span class="text-label-sm font-bold text-on-surface">Transit: Step 4 of 5</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Input Area -->
+<footer class="p-inset-padding md:px-0 md:pb-8 flex justify-center bg-transparent">
+<div class="w-full max-w-container-max-width px-4">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-[0_4px_6px_-1px_rgb(0_0_0/0.1),0_2px_4px_-2px_rgb(0_0_0/0.1)] focus-within:border-primary transition-all p-2">
+<div class="flex items-center gap-2">
+<button class="p-2 text-secondary hover:text-primary transition-colors">
+<span class="material-symbols-outlined">attach_file</span>
+</button>
+<textarea class="flex-1 bg-transparent border-none focus:ring-0 text-body-md py-2 resize-none chat-input" id="chatInput" placeholder="Type a follow-up question..." rows="1"></textarea>
+<button class="bg-surface-container-high text-secondary p-2.5 rounded-lg transition-all" id="sendBtn">
+<span class="material-symbols-outlined">send</span>
+</button>
+</div>
+</div>
+<p class="text-center text-[11px] text-outline mt-3">AI may provide incorrect logistics data. Verify with carrier for critical updates.</p>
+</div>
+</footer>
+</main>
+<script>
+        // Micro-interactions for the input area
+        const input = document.getElementById('chatInput');
+        const btn = document.getElementById('sendBtn');
+
+        input.addEventListener('input', () => {
+            if (input.value.trim().length > 0) {
+                btn.classList.remove('bg-surface-container-high', 'text-secondary');
+                btn.classList.add('bg-primary', 'text-on-primary');
+            } else {
+                btn.classList.add('bg-surface-container-high', 'text-secondary');
+                btn.classList.remove('bg-primary', 'text-on-primary');
+            }
+            
+            // Auto-resize
+            input.style.height = 'auto';
+            input.style.height = (input.scrollHeight) + 'px';
+        });
+
+        // Hover effect for sidebar items interaction state as described
+        document.querySelectorAll('nav > div > div').forEach(item => {
+            item.addEventListener('mousedown', () => {
+                item.style.transform = 'scale(0.98)';
+            });
+            item.addEventListener('mouseup', () => {
+                item.style.transform = 'scale(1)';
+            });
+            item.addEventListener('mouseleave', () => {
+                item.style.transform = 'scale(1)';
+            });
+        });
+    </script>
+
+
+</body></html>
