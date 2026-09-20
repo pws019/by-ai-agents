@@ -1,0 +1,925 @@
+openapi: 3.0.3
+info:
+  title: Education Service API
+  version: 0.1.0
+  description: |
+    学员服务 BFF/业务 API 契约（对应 specs/education-service-agent/design.md §5）。
+    约定：JSON camelCase；金额为整数分；时间为 ISO8601 UTC；studentId 永远由服务端从会话取得，
+    请求体中不出现。写操作接受 Idempotency-Key；状态更新携带 expectedRevision。
+servers:
+  - url: /api/v1
+tags:
+  - {name: auth}
+  - {name: catalog}
+  - {name: student}
+  - {name: applications}
+  - {name: teacher}
+  - {name: chat}
+  - {name: replays}
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: 登录，成功后 Set-Cookie 设置 HttpOnly 会话
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: 已登录
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '422': {$ref: '#/components/responses/Invalid'}
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      responses:
+        '204': {description: 已注销}
+  /me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      responses:
+        '200':
+          description: 当前身份
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /catalog/current:
+    get:
+      tags: [catalog]
+      operationId: getCurrentOffering
+      summary: 当前招生期；未发布的价格/日期为 null，不得猜测
+      security: []
+      responses:
+        '200':
+          description: 当前招生期
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CurrentOffering'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /me/enrollments:
+    get:
+      tags: [student]
+      operationId: listMyEnrollments
+      responses:
+        '200':
+          description: 本人报名
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Enrollment'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /me/enrollments/{enrollmentId}/schedule:
+    get:
+      tags: [student]
+      operationId: getMySchedule
+      parameters: [{$ref: '#/components/parameters/EnrollmentId'}]
+      responses:
+        '200':
+          description: 课表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Lesson'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /me/enrollments/{enrollmentId}/progress:
+    get:
+      tags: [student]
+      operationId: getMyProgress
+      summary: 学习进度，仅表示记录的完成情况，不等同于掌握程度
+      parameters: [{$ref: '#/components/parameters/EnrollmentId'}]
+      responses:
+        '200':
+          description: 进度
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProgressItem'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /cohorts/transfer-targets:
+    get:
+      tags: [student]
+      operationId: getTransferTargets
+      summary: 已建立的可展示目标班期；不承诺批准
+      parameters:
+        - {name: enrollmentId, in: query, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: 目标班期，可为空数组
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/CohortSummary'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /applications/drafts:
+    post:
+      tags: [applications]
+      operationId: createApplicationDraft
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateDraftRequest'}
+            examples:
+              transferUnknownTarget:
+                summary: 转班且目标班期未知（AC-007）
+                value: {type: transfer, enrollmentId: 6f1d2c1e-0000-4000-8000-000000000001, reason: 工作冲突, targetCohortId: null}
+      responses:
+        '201':
+          description: 新草稿及确认卡；同 enrollment/type 已有未结束申请时返回已有申请（200，AC-006）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationDraft'}
+        '200':
+          description: 幂等重放或已存在的未结束申请，返回同一 id
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationDraft'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/Invalid'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /applications/{applicationId}/draft:
+    patch:
+      tags: [applications]
+      operationId: updateApplicationDraft
+      summary: 修改关键字段后旧确认卡失效，返回新 revision 与新确认卡
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateDraftRequest'}
+      responses:
+        '200':
+          description: 新摘要与确认卡
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationDraft'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
+  /applications/{applicationId}/confirm:
+    post:
+      tags: [applications]
+      operationId: confirmApplication
+      summary: 仅可信 UI 调用；确认卡的 confirmationId 绑定 payloadHash 与 revision
+      parameters:
+        - {$ref: '#/components/parameters/ApplicationId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfirmRequest'}
+      responses:
+        '200':
+          description: 已提交
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: 确认卡过期/已用/revision 不符（AC-005）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              examples:
+                staleConfirmation:
+                  value:
+                    error:
+                      code: STALE_CONFIRMATION
+                      message: 申请内容已更新，请查看最新摘要后重新确认
+                      requestId: req_01HZX
+                      details: {currentRevision: 3, expectedRevision: 2}
+        '422': {$ref: '#/components/responses/Invalid'}
+  /applications/{applicationId}/supplement:
+    post:
+      tags: [applications]
+      operationId: supplementApplication
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, expectedRevision]
+              properties:
+                text: {type: string, minLength: 1, maxLength: 2000}
+                expectedRevision: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: 已补充并回到 submitted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /applications/{applicationId}/withdraw:
+    post:
+      tags: [applications]
+      operationId: withdrawApplication
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpectedRevisionRequest'}
+      responses:
+        '200':
+          description: 已撤回
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: 已批准/已终态或 revision 不符（AC-022）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              examples:
+                alreadyApproved:
+                  value:
+                    error:
+                      code: INVALID_STATE
+                      message: 申请已批准，不能直接撤回
+                      requestId: req_01HZY
+                      details: {status: approved}
+  /applications/{applicationId}/proposal-response:
+    post:
+      tags: [applications]
+      operationId: respondToProposal
+      summary: 学员接受/拒绝老师方案；拒绝后回到待老师处理，不自动执行
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accept, confirmationId, expectedRevision]
+              properties:
+                accept: {type: boolean}
+                confirmationId: {type: string, format: uuid}
+                expectedRevision: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: 更新后的申请
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /me/applications:
+    get:
+      tags: [applications]
+      operationId: listMyApplications
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: 本人申请分页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationPage'}
+  /applications/{applicationId}:
+    get:
+      tags: [applications]
+      operationId: getApplication
+      summary: owner 或 teacher 可见；他人申请返回 404
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      responses:
+        '200':
+          description: 详情含事件时间线
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationDetail'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /teacher/applications:
+    get:
+      tags: [teacher]
+      operationId: listTeacherApplications
+      parameters:
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/ApplicationStatus'}}
+        - {name: type, in: query, schema: {$ref: '#/components/schemas/ApplicationType'}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: 申请队列
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationPage'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /teacher/applications/{applicationId}/request-info:
+    post:
+      tags: [teacher]
+      operationId: teacherRequestInfo
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question, expectedRevision]
+              properties:
+                question: {type: string, minLength: 1, maxLength: 2000}
+                expectedRevision: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: needs_info
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /teacher/applications/{applicationId}/propose:
+    post:
+      tags: [teacher]
+      operationId: teacherPropose
+      summary: 转班给目标班期，或退费给 refundCents；进入 awaiting_student_confirmation
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProposeRequest'}
+      responses:
+        '200':
+          description: 已提出方案，附学员确认卡
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
+  /teacher/applications/{applicationId}/approve:
+    post:
+      tags: [teacher]
+      operationId: teacherApprove
+      summary: 转班在事务内变更报名；退费仅表示同意（executionStatus=pending）
+      parameters:
+        - {$ref: '#/components/parameters/ApplicationId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApproveRequest'}
+      responses:
+        '200':
+          description: 已批准
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: 并发审批只有一个成功（AC-008）或状态/版本冲突
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              examples:
+                concurrentApproval:
+                  value:
+                    error:
+                      code: REVISION_CONFLICT
+                      message: 申请已被其他老师处理
+                      requestId: req_01HZZ
+                      details: {currentRevision: 5, expectedRevision: 4, status: approved}
+        '422': {$ref: '#/components/responses/Invalid'}
+  /teacher/applications/{applicationId}/reject:
+    post:
+      tags: [teacher]
+      operationId: teacherReject
+      parameters: [{$ref: '#/components/parameters/ApplicationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, expectedRevision]
+              properties:
+                reason: {type: string, minLength: 1, maxLength: 2000}
+                expectedRevision: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: 已拒绝
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /teacher/applications/{applicationId}/refund-result:
+    post:
+      tags: [teacher]
+      operationId: teacherRecordRefundResult
+      summary: 人工登记退款结果；不代表支付平台验证，重复登记不重复增加 refundedCents
+      parameters:
+        - {$ref: '#/components/parameters/ApplicationId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, note, expectedRevision]
+              properties:
+                outcome: {type: string, enum: [completed, failed]}
+                reference: {type: string, maxLength: 200, nullable: true}
+                note: {type: string, minLength: 1, maxLength: 2000}
+                expectedRevision: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: executionStatus 已更新
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
+
+  /replays/{segmentId}/access:
+    get:
+      tags: [replays]
+      operationId: getReplayAccess
+      summary: 每次调用都重新校验权益；无权益或他人班期返回 404
+      parameters:
+        - {name: segmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: 受控播放入口
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReplayAccess'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /conversations:
+    post:
+      tags: [chat]
+      operationId: createConversation
+      responses:
+        '201':
+          description: 新会话（访客为受限临时会话）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Conversation'}
+    get:
+      tags: [chat]
+      operationId: listConversations
+      responses:
+        '200':
+          description: 本人会话
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Conversation'}
+  /conversations/{conversationId}/messages:
+    get:
+      tags: [chat]
+      operationId: listMessages
+      summary: 断线后据此恢复最终消息与任务状态（V1 不重放 token）
+      parameters: [{$ref: '#/components/parameters/ConversationId'}]
+      responses:
+        '200':
+          description: 消息与运行状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, runStatus]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Message'}
+                  runStatus: {type: string, enum: [idle, running]}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [chat]
+      operationId: sendMessage
+      summary: 发送消息，响应为 text/event-stream（POST fetch 流，事件见 events.schema.json）
+      parameters: [{$ref: '#/components/parameters/ConversationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientMessageId, text]
+              properties:
+                clientMessageId: {type: string, minLength: 1, maxLength: 100}
+                text: {type: string, minLength: 1, maxLength: 4000}
+      responses:
+        '200':
+          description: SSE；每个 data 行是 StreamEvent JSON
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: 同会话已有生成任务（RUN_IN_PROGRESS）或 human 接管中
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '429': {$ref: '#/components/responses/Budget'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /conversations/{conversationId}/handoff:
+    post:
+      tags: [chat]
+      operationId: requestHandoff
+      parameters: [{$ref: '#/components/parameters/ConversationId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string, maxLength: 500}
+      responses:
+        '200':
+          description: 队列状态
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Handoff'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /teacher/handoffs/{handoffId}/claim:
+    post:
+      tags: [teacher]
+      operationId: claimHandoff
+      parameters: [{$ref: '#/components/parameters/HandoffId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpectedRevisionRequest'}
+      responses:
+        '200':
+          description: 已接管
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Handoff'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /teacher/handoffs/{handoffId}/release:
+    post:
+      tags: [teacher]
+      operationId: releaseHandoff
+      parameters: [{$ref: '#/components/parameters/HandoffId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpectedRevisionRequest'}
+      responses:
+        '200':
+          description: 已结束接管，会话回到 bot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Handoff'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /teacher/conversations/{conversationId}/messages:
+    post:
+      tags: [teacher]
+      operationId: teacherSendMessage
+      parameters: [{$ref: '#/components/parameters/ConversationId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientMessageId, text]
+              properties:
+                clientMessageId: {type: string, minLength: 1, maxLength: 100}
+                text: {type: string, minLength: 1, maxLength: 4000}
+      responses:
+        '201':
+          description: 已发送
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Message'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sid
+  parameters:
+    EnrollmentId: {name: enrollmentId, in: path, required: true, schema: {type: string, format: uuid}}
+    ApplicationId: {name: applicationId, in: path, required: true, schema: {type: string, format: uuid}}
+    ConversationId: {name: conversationId, in: path, required: true, schema: {type: string, format: uuid}}
+    HandoffId: {name: handoffId, in: path, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 同 key 同 payload 返回原结果；同 key 不同 payload 返回 409 IDEMPOTENCY_KEY_REUSED
+      schema: {type: string, minLength: 8, maxLength: 128}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+  responses:
+    Unauthorized:
+      description: 未登录
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Forbidden:
+      description: 角色无权限
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    NotFound:
+      description: 不存在，或他人私人资源（不区分）
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Invalid:
+      description: 参数错误
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Conflict:
+      description: 状态或版本冲突
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Budget:
+      description: 预算/限流
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Unavailable:
+      description: 依赖不可用
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code:
+              type: string
+              enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, VALIDATION_ERROR, INVALID_STATE, REVISION_CONFLICT,
+                     STALE_CONFIRMATION, IDEMPOTENCY_KEY_REUSED, RUN_IN_PROGRESS, HANDOFF_ACTIVE,
+                     BUDGET_EXCEEDED, DEPENDENCY_UNAVAILABLE, INTERNAL]
+            message: {type: string}
+            requestId: {type: string}
+            details: {type: object, additionalProperties: true}
+    LoginRequest:
+      type: object
+      required: [loginName, password]
+      properties:
+        loginName: {type: string, minLength: 1}
+        password: {type: string, minLength: 1}
+    User:
+      type: object
+      required: [id, loginName, role]
+      properties:
+        id: {type: string, format: uuid}
+        loginName: {type: string}
+        role: {type: string, enum: [student, teacher]}
+    Money:
+      type: integer
+      minimum: 0
+      description: 整数分
+    CohortSummary:
+      type: object
+      required: [cohortId, name, startAt]
+      properties:
+        cohortId: {type: string, format: uuid}
+        name: {type: string}
+        startAt: {type: string, format: date-time, nullable: true}
+    CurrentOffering:
+      type: object
+      required: [cohortId, title, version, startAt, priceCents, currency, publicFacts]
+      properties:
+        cohortId: {type: string, format: uuid}
+        title: {type: string}
+        version: {type: integer}
+        startAt: {type: string, format: date-time, nullable: true}
+        priceCents: {type: integer, minimum: 0, nullable: true}
+        currency: {type: string}
+        publicFacts:
+          type: array
+          items: {type: string}
+    Enrollment:
+      type: object
+      required: [enrollmentId, cohort, status, rights, policyVersion, revision]
+      properties:
+        enrollmentId: {type: string, format: uuid}
+        cohort: {$ref: '#/components/schemas/CohortSummary'}
+        status: {type: string, enum: [active, transferred, refunded, ended]}
+        rights: {type: array, items: {type: string}, description: 来自订单绑定的协议版本}
+        policyVersion: {type: integer}
+        revision: {type: integer}
+    Lesson:
+      type: object
+      required: [lessonId, title, order]
+      properties:
+        lessonId: {type: string, format: uuid}
+        title: {type: string}
+        order: {type: integer}
+        hasReplay: {type: boolean}
+    ProgressItem:
+      type: object
+      required: [lessonId, status, source]
+      properties:
+        lessonId: {type: string, format: uuid}
+        status: {type: string, enum: [not_started, in_progress, completed]}
+        source: {type: string, enum: [manual, import]}
+    ApplicationType: {type: string, enum: [transfer, refund]}
+    ApplicationStatus:
+      type: string
+      enum: [draft, submitted, needs_info, awaiting_student_confirmation, approved, rejected, withdrawn]
+    ExecutionStatus: {type: string, enum: [not_started, pending, completed, failed]}
+    CreateDraftRequest:
+      type: object
+      required: [type, enrollmentId, reason]
+      properties:
+        type: {$ref: '#/components/schemas/ApplicationType'}
+        enrollmentId: {type: string, format: uuid}
+        reason: {type: string, minLength: 1, maxLength: 2000}
+        targetCohortId: {type: string, format: uuid, nullable: true}
+    UpdateDraftRequest:
+      type: object
+      required: [expectedRevision]
+      properties:
+        reason: {type: string, minLength: 1, maxLength: 2000}
+        targetCohortId: {type: string, format: uuid, nullable: true}
+        expectedRevision: {type: integer, minimum: 0}
+    ConfirmRequest:
+      type: object
+      required: [confirmationId, expectedRevision]
+      properties:
+        confirmationId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 0}
+    ExpectedRevisionRequest:
+      type: object
+      required: [expectedRevision]
+      properties:
+        expectedRevision: {type: integer, minimum: 0}
+    ProposeRequest:
+      type: object
+      required: [reason, expectedRevision]
+      properties:
+        targetCohortId: {type: string, format: uuid, nullable: true}
+        refundCents: {$ref: '#/components/schemas/Money'}
+        reason: {type: string, minLength: 1, maxLength: 2000}
+        expectedRevision: {type: integer, minimum: 0}
+    ApproveRequest:
+      type: object
+      required: [expectedRevision]
+      properties:
+        expectedRevision: {type: integer, minimum: 0}
+        oldReplayAccess:
+          type: string
+          enum: [keep, revoke]
+          description: 转班必填；退费忽略
+    Confirmation:
+      type: object
+      required: [confirmationId, applicationId, revision, expiresAt, summary]
+      properties:
+        confirmationId: {type: string, format: uuid}
+        applicationId: {type: string, format: uuid}
+        revision: {type: integer}
+        expiresAt: {type: string, format: date-time}
+        summary: {$ref: '#/components/schemas/ApplicationSummary'}
+    ApplicationSummary:
+      type: object
+      required: [type, enrollmentId, reason]
+      properties:
+        type: {$ref: '#/components/schemas/ApplicationType'}
+        enrollmentId: {type: string, format: uuid}
+        reason: {type: string}
+        targetCohortId: {type: string, format: uuid, nullable: true}
+        refundCents: {type: integer, minimum: 0, nullable: true}
+    ApplicationDraft:
+      type: object
+      required: [id, revision, status, summary, confirmation]
+      properties:
+        id: {type: string, format: uuid}
+        revision: {type: integer}
+        status: {$ref: '#/components/schemas/ApplicationStatus'}
+        summary: {$ref: '#/components/schemas/ApplicationSummary'}
+        confirmation: {$ref: '#/components/schemas/Confirmation'}
+    Application:
+      type: object
+      required: [id, type, enrollmentId, status, executionStatus, revision, summary]
+      properties:
+        id: {type: string, format: uuid}
+        type: {$ref: '#/components/schemas/ApplicationType'}
+        enrollmentId: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/ApplicationStatus'}
+        executionStatus: {$ref: '#/components/schemas/ExecutionStatus'}
+        revision: {type: integer}
+        summary: {$ref: '#/components/schemas/ApplicationSummary'}
+        proposal: {type: object, additionalProperties: true, nullable: true}
+        pendingConfirmation: {$ref: '#/components/schemas/Confirmation'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ApplicationEvent:
+      type: object
+      required: [eventType, actorId, revision, createdAt]
+      properties:
+        eventType: {type: string}
+        actorId: {type: string, format: uuid}
+        revision: {type: integer}
+        details: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+    ApplicationDetail:
+      allOf:
+        - {$ref: '#/components/schemas/Application'}
+        - type: object
+          required: [events]
+          properties:
+            events:
+              type: array
+              items: {$ref: '#/components/schemas/ApplicationEvent'}
+    ApplicationPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Application'}
+        nextCursor: {type: string, nullable: true}
+    ReplayAccess:
+      type: object
+      required: [segmentId, playbackUrl, startSeconds, endSeconds, synthetic]
+      properties:
+        segmentId: {type: string, format: uuid}
+        playbackUrl: {type: string, description: 应用受控播放路由/短期地址}
+        startSeconds: {type: number, minimum: 0}
+        endSeconds: {type: number, minimum: 0}
+        synthetic: {type: boolean, description: 合成演示资源标记}
+    Conversation:
+      type: object
+      required: [id, mode, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        mode: {type: string, enum: [bot, queued, human, closed]}
+        createdAt: {type: string, format: date-time}
+    Message:
+      type: object
+      required: [id, role, content, createdAt]
+      properties:
+        id: {type: string}
+        role: {type: string, enum: [user, assistant, teacher, system]}
+        content: {type: string}
+        runId: {type: string, nullable: true}
+        createdAt: {type: string, format: date-time}
+    Handoff:
+      type: object
+      required: [id, conversationId, status, revision]
+      properties:
+        id: {type: string, format: uuid}
+        conversationId: {type: string, format: uuid}
+        status: {type: string, enum: [queued, claimed, released]}
+        teacherId: {type: string, format: uuid, nullable: true}
+        summary: {type: string, nullable: true}
+        reason: {type: string, nullable: true}
+        revision: {type: integer}
+
+security:
+  - sessionCookie: []

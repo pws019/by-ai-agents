@@ -1,0 +1,6 @@
+[
+  {"why":"tool.status 泄露参数","event":{"eventId":"x1","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"tool.status","payload":{"tool":"getMyEnrollment","status":"started","args":{"userId":"other"}}}},
+  {"why":"replay.card 不得携带播放地址","event":{"eventId":"x2","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"replay.card","payload":{"segmentId":"6f1d2c1e-0000-4000-8000-0000000000d1","lessonTitle":"t","startSeconds":1,"endSeconds":2,"playbackUrl":"https://x"}}},
+  {"why":"未知事件类型","event":{"eventId":"x3","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"approve.application","payload":{}}},
+  {"why":"message.completed 缺 messageId","event":{"eventId":"x4","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"message.completed","payload":{"text":"hi"}}}
+]

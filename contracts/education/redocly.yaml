@@ -1,0 +1,7 @@
+extends:
+  - recommended
+rules:
+  # operationId 已是稳定标识；不强制每个端点写 summary，只在语义不明显处写
+  operation-summary: off
+  # 少数端点（登录后的列表等）不定义 4xx 属实际契约，不为凑规则虚构
+  operation-4xx-response: off

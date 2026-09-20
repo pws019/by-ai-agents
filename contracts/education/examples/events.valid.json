@@ -1,0 +1,10 @@
+[
+  {"eventId":"e1","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"tool.status","payload":{"tool":"getMyEnrollment","status":"started"}},
+  {"eventId":"e2","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"message.delta","payload":{"text":"你当前报名的是第 2 期。"}},
+  {"eventId":"e3","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"citation","payload":{"sourceId":"handout-01","sourceVersion":2,"title":"第1讲讲义","segmentId":null,"startSeconds":null,"endSeconds":null}},
+  {"eventId":"e4","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"replay.card","payload":{"segmentId":"6f1d2c1e-0000-4000-8000-0000000000d1","lessonTitle":"第3讲 HTTP 与异步","startSeconds":125,"endSeconds":310}},
+  {"eventId":"e5","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"application.confirmation","payload":{"applicationId":"6f1d2c1e-0000-4000-8000-0000000000a1","confirmationId":"6f1d2c1e-0000-4000-8000-0000000000b1","revision":1,"expiresAt":"2026-09-21T00:00:00Z","summary":{"type":"transfer","reason":"工作冲突","targetCohortId":null}}},
+  {"eventId":"e6","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"handoff.status","payload":{"mode":"queued"}},
+  {"eventId":"e7","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_1","type":"message.completed","payload":{"messageId":"m1","text":"你当前报名的是第 2 期。"}},
+  {"eventId":"e8","conversationId":"6f1d2c1e-0000-4000-8000-0000000000c1","runId":"run_2","type":"run.error","payload":{"code":"DEPENDENCY_UNAVAILABLE","message":"图谱服务不可用，无法核验先修关系"}}
+]

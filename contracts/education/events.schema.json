@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://by-ai-agents.local/contracts/education/events.schema.json",
+  "title": "StreamEvent",
+  "description": "POST /conversations/{id}/messages 的 SSE 事件。每个 SSE data 行是一个 StreamEvent。V1 不承诺 token 级重放；断线后用 GET messages 恢复。",
+  "type": "object",
+  "required": ["eventId", "conversationId", "runId", "type", "payload"],
+  "properties": {
+    "eventId": {"type": "string", "minLength": 1},
+    "conversationId": {"type": "string", "format": "uuid"},
+    "runId": {"type": "string", "minLength": 1},
+    "type": {
+      "enum": ["message.delta", "tool.status", "citation", "replay.card", "application.confirmation", "handoff.status", "message.completed", "run.error"]
+    },
+    "payload": {"type": "object"}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": {"const": "message.delta"},
+        "payload": {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}}, "additionalProperties": false}
+      }
+    },
+    {
+      "properties": {
+        "type": {"const": "tool.status"},
+        "payload": {
+          "type": "object",
+          "required": ["tool", "status"],
+          "properties": {
+            "tool": {"type": "string"},
+            "status": {"enum": ["started", "succeeded", "failed"]}
+          },
+          "additionalProperties": false,
+          "description": "脱敏：不含参数与返回值"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {"const": "citation"},
+        "payload": {
+          "type": "object",
+          "required": ["sourceId", "sourceVersion", "title"],
+          "properties": {
+            "sourceId": {"type": "string"},
+            "sourceVersion": {"type": "integer"},
+            "title": {"type": "string"},
+            "segmentId": {"type": ["string", "null"], "format": "uuid"},
+            "startSeconds": {"type": ["number", "null"], "description": "讲义无时间戳时必须为 null，不得伪造"},
+            "endSeconds": {"type": ["number", "null"]}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {"const": "replay.card"},
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "lessonTitle", "startSeconds", "endSeconds"],
+          "properties": {
+            "segmentId": {"type": "string", "format": "uuid"},
+            "lessonTitle": {"type": "string"},
+            "startSeconds": {"type": "number", "minimum": 0},
+            "endSeconds": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": false,
+          "description": "不含播放地址；点击后走 GET /replays/{segmentId}/access 再鉴权"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {"const": "application.confirmation"},
+        "payload": {
+          "type": "object",
+          "required": ["applicationId", "confirmationId", "revision", "expiresAt", "summary"],
+          "properties": {
+            "applicationId": {"type": "string", "format": "uuid"},
+            "confirmationId": {"type": "string", "format": "uuid"},
+            "revision": {"type": "integer", "minimum": 0},
+            "expiresAt": {"type": "string", "format": "date-time"},
+            "summary": {"type": "object"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {"const": "handoff.status"},
+        "payload": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {"mode": {"enum": ["bot", "queued", "human", "closed"]}},
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {"const": "message.completed"},
+        "payload": {
+          "type": "object",
+          "required": ["messageId", "text"],
+          "properties": {"messageId": {"type": "string"}, "text": {"type": "string"}},
+          "additionalProperties": false,
+          "description": "完整 assistant 文本，供客户端与 delta 拼接结果核对"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {"const": "run.error"},
+        "payload": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": {"enum": ["DEPENDENCY_UNAVAILABLE", "BUDGET_EXCEEDED", "TOOL_FAILED", "INTERNAL"]},
+            "message": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

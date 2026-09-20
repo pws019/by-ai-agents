@@ -1,0 +1,17 @@
+{
+  "name": "education-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "redocly lint openapi.yaml",
+    "validate": "node scripts/validate.mjs",
+    "test": "npm run lint && npm run validate"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^2.0.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.6.0"
+  }
+}

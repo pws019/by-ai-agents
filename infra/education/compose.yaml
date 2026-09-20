@@ -1,0 +1,59 @@
+# 教育 Agent 开发数据服务。仅用于本地开发，密码来自 .env（不入库）。
+# 启动: docker compose --env-file .env -f compose.yaml up -d --wait
+name: education-dev
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # 宿主 5432 常被本机 Postgres 占用，故默认映射 5433
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  neo4j:
+    image: neo4j:5.26.10-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      # 仅供 healthcheck 的 cypher-shell 使用。注意：Neo4j 镜像会把所有 NEO4J_* 变量当配置解析，
+      # 未知名字会导致启动失败，所以这里不能叫 NEO4J_PASSWORD。
+      HEALTHCHECK_NEO4J_PW: ${NEO4J_PASSWORD}
+    ports:
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p $${HEALTHCHECK_NEO4J_PW} 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6335}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # qdrant 镜像不含 curl/wget，用 bash 的 /dev/tcp 探测 readyz
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  qdrant_data:
