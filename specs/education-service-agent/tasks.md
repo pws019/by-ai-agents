@@ -12,7 +12,7 @@
 - [x] T-02（4h）将 design.md 的 API/SSE 固化为可验证 OpenAPI 与事件 schema。`contracts/education/openapi.yaml`、`events.schema.json`。消费方：education-api、education-agent、customer-frontend、evals。验收：schema 验证通过，状态错误/确认接口有样例。
 - [x] T-03（3h）添加开发数据服务与 .env.example，支持 mock/real 模式。`infra/education/compose.yaml`。验收：健康检查通过，重启数据保留；密钥不入库。
 - [x] T-04（3h）创建 Python LangGraph/FastAPI 骨架、持久化 checkpoint，完成工具→中断→重启→恢复 spike。`education-agent/pyproject.toml`、`src/`。验收：记录版本及重启恢复测试。
-- [ ] T-05（2h）接入 workspace 启动脚本，区分 legacy/education 模式，锁依赖。`package.json`、`turbo.json`、新增模块 package.json。验收：默认教育模式不启动旧模型服务。
+- [x] T-05（2h）接入 workspace 启动脚本，区分 legacy/education 模式，锁依赖。`package.json`、`turbo.json`、新增模块 package.json。验收：默认教育模式不启动旧模型服务。
 
 阶段门槛：T-04 失败则先排查并记录，不悄悄换框架。讲解 HTTP 服务、Agent loop、checkpoint 的区别。
 

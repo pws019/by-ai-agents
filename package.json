@@ -9,13 +9,21 @@
     "customer-http-demo",
     "customer-qdrant",
     "customer-logistics-api",
-    "customer-frontend"
+    "customer-frontend",
+    "education-agent"
   ],
   "scripts": {
     "postinstall": "patch-package",
     "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api && npm install --workspace=customer-frontend && node scripts/setup-rag-ingest.mjs",
-    "dev": "turbo run dev",
-    "rag:ingest": "npm run rag:ingest --workspace=customer-agents"
+    "dev": "npm run dev:education",
+    "rag:ingest": "npm run rag:ingest --workspace=customer-agents",
+    "dev:education": "npm run edu:infra && turbo run dev --filter=education-agent",
+    "dev:legacy": "turbo run dev --filter=!education-agent",
+    "edu:infra": "docker compose --env-file infra/education/.env -f infra/education/compose.yaml up -d --wait",
+    "edu:infra:down": "docker compose --env-file infra/education/.env -f infra/education/compose.yaml down",
+    "setup:education": "uv sync --project education-agent && npm ci --prefix contracts/education",
+    "contracts:check": "npm test --prefix contracts/education",
+    "test:education": "npm test --workspace=education-agent"
   },
   "devDependencies": {
     "patch-package": "^8.0.1",
