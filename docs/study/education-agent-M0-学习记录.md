@@ -100,3 +100,10 @@
 - 实验（scratchpad/demo.py）：await 串行 0.4s，gather 并发 0.2s，协程里用 time.sleep 并发失效 0.4s。
 - 检查题：10 个请求下阻塞 sleep(5) 第 10 个总耗时约 50s（先等 45s），await asyncio.sleep(5) 全部约 5s。学员答对。补充：阻塞会卡住整个事件循环（含健康检查）；FastAPI 的普通 `def` 会进线程池，`async def` 里不能有阻塞调用。
 - L-00「async 与服务边界」讲明白：通过。
+
+## 11. L-00 独立练习结论
+- 结构：ask_reason（可 interrupt）→ draft（写操作）→ confirm → finalize。节点边界 = checkpoint 边界，写操作放在被中断节点之后，重跑不会重复写。
+- 日志证据：`ask_reason, reason:enter, ask_reason, reason:enter, reason:resumed, draft, confirm:enter`。
+- 协议（方案 B）：中断带 type，resume 回传 type+value，服务端与当前 pendingInterrupt 比较，不一致 409；无待处理中断也 409。
+- 调试教训：500 先看服务端日志；`.json()` 后丢失 status_code；dict 用 `["k"]`；next 是 list；测试要反向验证（移除保护看是否失败）。
+- 仍需：M3 前用等价案例无提示复现；调用图补充 checkpoint 写入点与重跑标注。

@@ -48,7 +48,11 @@ app = FastAPI(title="education-agent (T-04 spike)", lifespan=lifespan)
 
 
 class ResumeBody(BaseModel):
-    decision: str  # "confirm" | "cancel"
+    type: str
+    value: str
+
+class StartBody(BaseModel):
+    reason: str | None = None
 
 
 def _cfg(task_id: str) -> dict:
@@ -68,17 +72,30 @@ async def _snapshot(task_id: str) -> dict:
 
 
 @app.post("/spike/{task_id}/start")
-async def start(task_id: str):
-    await app.state.graph.ainvoke({}, _cfg(task_id))
+async def start(task_id: str, body: StartBody | None = None):
+    dict1 = {}
+    if(body != None and body.reason != None):
+        dict1["reason"] = body.reason
+    await app.state.graph.ainvoke(dict1, _cfg(task_id))
     return await _snapshot(task_id)
 
 
 @app.post("/spike/{task_id}/resume")
 async def resume(task_id: str, body: ResumeBody):
     snap = await _snapshot(task_id)
+    pendingInterrupt = snap["pendingInterrupt"]
     if not snap["next"]:
         raise HTTPException(409, "task already finished")
-    await app.state.graph.ainvoke(Command(resume=body.decision), _cfg(task_id))
+    # if pendingInterrupt[0] == 'draft' and body.type != 'need_reason':
+    #     raise HTTPException(409, "type error")
+    # if snap["next"] == 'draft' and body.type != 'need_confirm':
+    #     raise HTTPException(409, "type error")
+    if len(pendingInterrupt) == 0:
+        raise HTTPException(409, "type error")
+    if pendingInterrupt[0]["type"] != body.type:
+        raise HTTPException(409, "type error")
+
+    await app.state.graph.ainvoke(Command(resume=body.value), _cfg(task_id))
     return await _snapshot(task_id)
 
 

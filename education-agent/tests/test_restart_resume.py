@@ -41,9 +41,9 @@ def server():
 
 def test_interrupt_survives_kill_and_resumes(server):
     task = f"t-{uuid.uuid4().hex[:8]}"
-    r = httpx.post(f"{BASE}/spike/{task}/start").json()
+    r = httpx.post(f"{BASE}/spike/{task}/start", json={"reason": "test"}).json()
     assert r["next"] == ["confirm"]
-    assert r["pendingInterrupt"] == [{"summary": "转班草稿：从 A 班转到 B 班（合成数据）"}]
+    assert r["pendingInterrupt"] == [{"type": "need_confirm", "show": "转班草稿：从 A 班转到 B 班（合成数据）"}]
 
     # 模拟崩溃：SIGKILL，进程内一切内存状态丢失
     server[0].send_signal(signal.SIGKILL)
@@ -54,20 +54,20 @@ def test_interrupt_survives_kill_and_resumes(server):
     assert r["next"] == ["confirm"], "重启后应仍停在 confirm"
     assert r["pendingInterrupt"], "待确认的中断应仍在"
 
-    r = httpx.post(f"{BASE}/spike/{task}/resume", json={"decision": "confirm"}).json()
+    r = httpx.post(f"{BASE}/spike/{task}/resume", json={"type": "need_confirm","value": "confirm"}).json()
     assert r["next"] == []
     assert r["values"]["outcome"] == "executed"
 
     # 哪些代码重跑：draft 只跑 1 次（已完成的节点不重跑），confirm 从头重跑所以 enter 两次
     log = httpx.get(f"{BASE}/spike/{task}/log").json()
-    assert log == ["draft", "confirm:enter", "confirm:enter", "confirm:resumed", "finalize"]
+    assert log == ["ask_reason", "draft", "confirm:enter", "confirm:enter", "confirm:resumed", "finalize"]
 
 
 def test_resume_finished_task_conflicts_and_unknown_is_404(server):
     task = f"t-{uuid.uuid4().hex[:8]}"
-    httpx.post(f"{BASE}/spike/{task}/start")
-    httpx.post(f"{BASE}/spike/{task}/resume", json={"decision": "cancel"})
-    r = httpx.post(f"{BASE}/spike/{task}/resume", json={"decision": "confirm"})
+    httpx.post(f"{BASE}/spike/{task}/start", json={"reason": "test"})
+    httpx.post(f"{BASE}/spike/{task}/resume", json={"type": "need_confirm", "value": "cancel"})
+    r = httpx.post(f"{BASE}/spike/{task}/resume", json={"type": "need_confirm","value": "confirm"})
     assert r.status_code == 409
     assert httpx.get(f"{BASE}/spike/nope-{task}").status_code == 404
 
@@ -78,3 +78,42 @@ def test_checkpoint_tables_live_in_dedicated_schema():
             "SELECT table_schema FROM information_schema.tables WHERE table_name = 'checkpoints'"
         ).fetchall()
     assert rows == [(CHECKPOINT_SCHEMA,)]
+
+
+def test_interrupt_survives_kill_and_resumes_v2(server):
+    task = f"t-{uuid.uuid4().hex[:8]}"
+    r = httpx.post(f"{BASE}/spike/{task}/start").json()
+    assert r["next"] == ["ask_reason"]
+    assert r["pendingInterrupt"] == [{"type": "need_reason", "show": "需要补充原因"}]
+
+    # 模拟崩溃：SIGKILL，进程内一切内存状态丢失
+    server[0].send_signal(signal.SIGKILL)
+    server[0].wait()
+    server.append(start_server())
+
+    r = httpx.get(f"{BASE}/spike/{task}").json()
+    assert r["next"] == ["ask_reason"], "重启后应仍停在 ask_reason"
+    assert r["pendingInterrupt"], "待确认的中断应仍在"
+
+    r = httpx.post(f"{BASE}/spike/{task}/resume", json={"type": "need_reason", "value": "原因是这样的：巴拉巴拉"}).json()
+    assert r["next"] == ["confirm"]
+    # assert r["values"]["outcome"] == "executed"
+
+    # 哪些代码重跑：ask reason会由于缺乏原因重跑
+    log = httpx.get(f"{BASE}/spike/{task}/log").json()
+    assert log == ["ask_reason", "reason:enter", "ask_reason", "reason:enter", "reason:resumed","draft" ,"confirm:enter"]
+
+def test_interrupt_survives_kill_and_resumes_v3_error_type_send(server):
+    task = f"t-{uuid.uuid4().hex[:8]}"
+    r = httpx.post(f"{BASE}/spike/{task}/start").json()
+    assert r["next"] == ["ask_reason"]
+    assert r["pendingInterrupt"] == [{"type": "need_reason", "show": "需要补充原因"}]
+
+
+    resp = httpx.post(f"{BASE}/spike/{task}/resume", json={"type": "need_confirm", "value": "confirm"})
+    assert resp.status_code == 409
+
+    r = httpx.get(f"{BASE}/spike/{task}").json()
+    assert r["next"] == ["ask_reason"], "失败应仍停在 ask_reason"
+    assert r["pendingInterrupt"], "待确认的中断应仍在"
+    

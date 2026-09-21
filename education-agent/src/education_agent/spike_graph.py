@@ -14,6 +14,7 @@ Log = Callable[[str, str], Awaitable[None]]
 
 
 class SpikeState(TypedDict, total=False):
+    reason: str
     summary: str
     decision: str
     outcome: str
@@ -22,6 +23,16 @@ class SpikeState(TypedDict, total=False):
 def build_graph(checkpointer: BaseCheckpointSaver, log: Log):
     def thread_id(config) -> str:
         return config["configurable"]["thread_id"]
+
+    async def ask_reason(state: SpikeState, config) -> SpikeState:
+        await log(thread_id(config), "ask_reason")
+        receiveReason = state.get('reason') or '';
+        if not receiveReason:
+            await log(thread_id(config), "reason:enter")
+            receiveReason = interrupt({"type": "need_reason", "show": "需要补充原因"});
+            await log(thread_id(config), "reason:resumed")
+
+        return {"reason": receiveReason}
 
     async def draft(state: SpikeState, config) -> SpikeState:
         await log(thread_id(config), "draft")
@@ -32,7 +43,7 @@ def build_graph(checkpointer: BaseCheckpointSaver, log: Log):
         # 注意：恢复时本节点从头重跑，所以这行日志会出现两次。
         # interrupt 之前不能做不可幂等的写入。
         await log(thread_id(config), "confirm:enter")
-        decision = interrupt({"summary": state["summary"]})
+        decision = interrupt({"type": "need_confirm", "show": state["summary"]})
         await log(thread_id(config), "confirm:resumed")
         return {"decision": decision}
 
@@ -41,10 +52,12 @@ def build_graph(checkpointer: BaseCheckpointSaver, log: Log):
         return {"outcome": "executed" if state["decision"] == "confirm" else "cancelled"}
 
     g = StateGraph(SpikeState)
+    g.add_node("ask_reason", ask_reason)
     g.add_node("draft", draft)
     g.add_node("confirm", confirm)
     g.add_node("finalize", finalize)
-    g.add_edge(START, "draft")
+    g.add_edge(START, "ask_reason")
+    g.add_edge("ask_reason", "draft")
     g.add_edge("draft", "confirm")
     g.add_edge("confirm", "finalize")
     g.add_edge("finalize", END)

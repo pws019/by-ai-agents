@@ -10,7 +10,7 @@
 | T-02 契约 | 完成 | `cd contracts/education && npm test`：`redocly lint` 有效（0 error，8 warning 为 tag-description 等文档性提示）；`validate.mjs` 16 项 PASS：8 条事件正例通过、4 条反例被拒（tool.status 泄露参数、replay.card 带播放地址、未知事件类型、completed 缺 messageId）、3 条 4xx 错误样例（AC-005 STALE_CONFIRMATION、AC-022 INVALID_STATE、AC-008 REVISION_CONFLICT）符合 ErrorResponse |
 | T-03 数据服务 | 完成 | `docker compose --env-file .env -f compose.yaml up -d --wait` 三服务 healthy；写入后 `down`（不带 -v）→ `up`，容器 StartedAt 改变而 Postgres 表/Neo4j 节点/Qdrant collection 数据保留（探针数据已清理）；宿主直连 5433/6335/7474 成功；`.env` 被 .gitignore，未入库 |
 | T-04 LangGraph spike | 完成 | `cd education-agent && uv run pytest -q`：3 passed。核心用例真实起 uvicorn 子进程，interrupt 后 `kill -9`，重启后同一 task id `GET` 仍停在 confirm 且中断在，`resume` 后 outcome=executed；`spike_log` 顺序为 draft、confirm:enter、confirm:enter、confirm:resumed、finalize（draft 不重跑，confirm 节点从头重跑）。另：对已结束任务 resume→409，未知任务→404；checkpoint 表只在 `agent_checkpoint` schema（public 无）。版本：Python 3.13.13、langgraph 1.2.11、langgraph-checkpoint-postgres 3.1.2、fastapi 0.141.1、psycopg 3.3.6、uvicorn 0.53.0（`uv.lock` 锁定）。mock：无模型，工具为固定函数 |
-| T-05 workspace 脚本 | 未开始 | — |
+| T-05 workspace 脚本 | 完成 | `turbo run dev --dry=json`：`--filter=education-agent` 只含 `education-agent#dev`；`--filter=!education-agent` 含 6 个 legacy 任务、不含 education-agent。实测默认 `npm run dev`：8300 返回 200，旧服务端口 4111/5173/8123/8200/6333/8100 均无监听；停止后 8300 释放。`npm run test:education` 5 passed，`npm run contracts:check` 通过。package-lock 仅新增 education-agent 工作区条目（+9 行） |
 
 ## 2. T-01 基线盘点
 
@@ -61,6 +61,16 @@
 - 第一次"重启验证"因 zsh 未拆词 `$C` 命令根本没执行；读回数据不构成证据，已用容器 StartedAt 变化重做。教训：验证要有"发生过"的证据。
 - `lsof` 显示 5433 由 `ssh` 监听是 Colima 端口转发，非冲突。
 
+### T-05 设计决定
+| 决定 | 理由 |
+|---|---|
+| `npm run dev` 默认 = 教育模式（先 `edu:infra` 起数据服务，再 turbo 只启动 education-agent）；`dev:legacy` = `--filter=!education-agent` | 满足"默认不启动旧模型服务"；沿用 turbo，不自写进程管理 |
+| education-agent 加只含脚本的 package.json 并入 workspaces | turbo 只识别 npm workspace；Python 依赖仍由 uv.lock 锁定 |
+| contracts/education 不入 workspaces，根脚本 `contracts:check` 用 `--prefix` 委托 | 有独立 package-lock，避免与业务包共用依赖树 |
+| education-agent 开发端口 8300 | 避开 legacy 8200/8123/4111，测试用 8301 |
+| 后续：education-api、前端就绪后加入 `dev:education` 的 filter | M0 只有 agent 与数据服务 |
+| 已知：`edu:infra` 依赖 Docker/Colima 已启动，未启动时命令直接失败，未加友好提示 | 留待 README 启动文档（T-40）说明 |
+
 ### T-04 设计决定与踩坑
 | 决定 | 理由 |
 |---|---|
@@ -70,6 +80,17 @@
 | spike 用固定函数作"工具"，无模型 | T-04 只验证持久化与恢复，模型接入在 T-18 |
 | `spike_log` 表临时放在 `agent_checkpoint` | 仅 spike 观测用，M3 前删除 |
 
+### T-04 练习后补充
+- 已知未测场景：进程在节点执行之间崩溃，留下 next 非空但无待处理中断的 checkpoint；resume 已按 409 处理，但未构造该崩溃状态测试。
+- `need_confirm` 的 value 目前未校验（非 confirm 均视为取消）；补充原因未 strip 空白。均留待 M2/M3 处理。
+- HTTP 断开是否取消处理协程未实测。
+
+### resume 协议演进讨论（未实现，仅设计笔记）
+- 现状：`ResumeBody{type:str, value:str}`，服务端 409 比对 type 与当前 pendingInterrupt。
+- 方向：以 `type` 为判别字段的联合类型，每种中断独立 value 结构，格式错配 422、状态错配 409 两层校验；`need_confirm` 的 value 收窄为 confirm/cancel。
+- 演进：需要带 confirmationId 时，新增类型名（如 need_confirm_v2）而不是改旧 value 或加可选旁路字段；客户端仅为自有前端/Agent 时可同步升级，无需版本体系。
+- type 取值用枚举集中定义；真正唯一来源应是 openapi.yaml（oneOf+discriminator），T-06 后引入类型生成再收敛。
+
 ### 已知局限
 - 校验只覆盖契约自身一致性与样例；尚无从 openapi 生成 TS/Python 类型（T-06+ 引入时补），当前消费方需手工对照。
 - mock/real 目前只有 `.env.example` 中的 `EDUCATION_MODE` 占位，尚无代码消费。
@@ -78,7 +99,7 @@
 
 | L 编号 | 对应 T/AC 实现状态 | 学习状态 | 学习者证据 | 待解决问题/下次练习 |
 |---|---|---|---|---|
-| L-00 | T-04 已实现 | 练习中（讲明白部分基本通过，独立练习进行中） | 题1通过：答出重跑会重复创建、写操作须幂等；已补 Idempotency-Key/写入放 interrupt 之后。题2大体对，已纠正：HTTP 断开不等于任务失败；checkpoint 存图执行状态而非业务事实源。读代码后三问：①按 thread_id 查 checkpoint、search_path 只选 schema（通过）；②内存存储重启后丢状态（通过，补：重启后 GET 会 404、多 worker 也会失败）；③初答"从中断节点开始跑"，讲明白全文回答后纠正三处：①async 漏了阻塞调用卡事件循环，"服务边界"应答职责边界；②"工具"混入了 LangGraph，应为模型提议、后端执行的函数；③"请求抵达后断开不影响"过于绝对，异步框架下协程可能被取消，是否可恢复取决于状态是否落库（未实测，练习中验证）。此前已纠正为"已完成节点不重跑、被中断节点从第一行整体重跑，interrupt 第二次直接返回 resume 值" | — |
+| L-00 | T-04 已实现；spike 已扩展为 ask_reason→draft→confirm→finalize，resume 校验 type | 独立通过（含较多提示，M3 前用等价小案例无提示复现一次） | 题1通过：答出重跑会重复创建、写操作须幂等；已补 Idempotency-Key/写入放 interrupt 之后。题2大体对，已纠正：HTTP 断开不等于任务失败；checkpoint 存图执行状态而非业务事实源。练习证据：拆出 ask_reason 节点；日志 `ask_reason, reason:enter, ask_reason, reason:enter, reason:resumed, draft, confirm:enter`（被中断节点整体重跑，draft 只 1 次）；同一 task id 经 SIGKILL 重启后恢复；`uv run pytest -q` 5 passed；新增类型不匹配 409 测试，经反向验证（临时移除校验则该测试失败 200≠409）。提示说明：变量未赋值、`state["reason"]` KeyError、dict 取属性、next 列表与字符串比较等 bug 由 Claude 看服务端日志定位后提示，学员修复；resume 协议（type+value，方案 B）由学员选择并落地。读代码后三问：①按 thread_id 查 checkpoint、search_path 只选 schema（通过）；②内存存储重启后丢状态（通过，补：重启后 GET 会 404、多 worker 也会失败）；③初答"从中断节点开始跑"，讲明白全文回答后纠正三处：①async 漏了阻塞调用卡事件循环，"服务边界"应答职责边界；②"工具"混入了 LangGraph，应为模型提议、后端执行的函数；③"请求抵达后断开不影响"过于绝对，异步框架下协程可能被取消，是否可恢复取决于状态是否落库（未实测，练习中验证）。此前已纠正为"已完成节点不重跑、被中断节点从第一行整体重跑，interrupt 第二次直接返回 resume 值" | — |
 | L-01 | 待实施 | 未开始 | — | — |
 | L-02 | 待实施 | 未开始 | — | — |
 | L-03 | 待实施 | 未开始 | — | — |
@@ -104,4 +125,4 @@ L-00 独立练习在 T-04 后开始。
 
 ## 5. 用时与下次入口
 - 实现用时：M0 进行中；M0 完成后按实测重估排期。学习用时：尚无。
-- 下次入口：T-05（workspace 启动脚本，区分 legacy/education 模式），完成后 M0 收尾与重估。L-00 独立练习待做。
+- M0 的 T-01～T-05 已完成。下次入口：M0 验收汇报与排期重估，之后等"继续"进入 M1。L-00 已独立通过（含较多提示），M3 前需无提示复现。
