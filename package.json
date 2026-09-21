@@ -17,7 +17,7 @@
     "setup": "npm install --workspace=customer-agents && bash customer-embedding-demo/scripts/setup.sh && bash customer-http-demo/scripts/setup.sh && npm install --workspace=customer-logistics-api && npm install --workspace=customer-frontend && node scripts/setup-rag-ingest.mjs",
     "dev": "npm run dev:education",
     "rag:ingest": "npm run rag:ingest --workspace=customer-agents",
-    "dev:education": "npm run edu:infra && turbo run dev --filter=education-agent",
+    "dev:education": "echo '[dev] 教育模式（education-agent + 数据服务）。旧电商 Demo 请用: npm run dev:legacy' && npm run edu:infra && turbo run dev --filter=education-agent",
     "dev:legacy": "turbo run dev --filter=!education-agent",
     "edu:infra": "docker compose --env-file infra/education/.env -f infra/education/compose.yaml up -d --wait",
     "edu:infra:down": "docker compose --env-file infra/education/.env -f infra/education/compose.yaml down",
