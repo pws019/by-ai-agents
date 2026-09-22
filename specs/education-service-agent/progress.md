@@ -1,6 +1,6 @@
 # 进度记录
 
-更新：2026-09-20。当前里程碑：**M0（基线、契约与开发环境）**。
+更新：2026-09-20。当前里程碑：**M1（业务事实与身份）**。
 
 ## 1. 任务状态与验证证据
 
@@ -10,7 +10,9 @@
 | T-02 契约 | 完成 | `cd contracts/education && npm test`：`redocly lint` 有效（0 error，8 warning 为 tag-description 等文档性提示）；`validate.mjs` 16 项 PASS：8 条事件正例通过、4 条反例被拒（tool.status 泄露参数、replay.card 带播放地址、未知事件类型、completed 缺 messageId）、3 条 4xx 错误样例（AC-005 STALE_CONFIRMATION、AC-022 INVALID_STATE、AC-008 REVISION_CONFLICT）符合 ErrorResponse |
 | T-03 数据服务 | 完成 | `docker compose --env-file .env -f compose.yaml up -d --wait` 三服务 healthy；写入后 `down`（不带 -v）→ `up`，容器 StartedAt 改变而 Postgres 表/Neo4j 节点/Qdrant collection 数据保留（探针数据已清理）；宿主直连 5433/6335/7474 成功；`.env` 被 .gitignore，未入库 |
 | T-04 LangGraph spike | 完成 | `cd education-agent && uv run pytest -q`：3 passed。核心用例真实起 uvicorn 子进程，interrupt 后 `kill -9`，重启后同一 task id `GET` 仍停在 confirm 且中断在，`resume` 后 outcome=executed；`spike_log` 顺序为 draft、confirm:enter、confirm:enter、confirm:resumed、finalize（draft 不重跑，confirm 节点从头重跑）。另：对已结束任务 resume→409，未知任务→404；checkpoint 表只在 `agent_checkpoint` schema（public 无）。版本：Python 3.13.13、langgraph 1.2.11、langgraph-checkpoint-postgres 3.1.2、fastapi 0.141.1、psycopg 3.3.6、uvicorn 0.53.0（`uv.lock` 锁定）。mock：无模型，工具为固定函数 |
+| T-06 数据库迁移 | 完成 | `npm test --workspace=education-api`：16 passed（新建临时库→迁移→再次迁移无变化→篡改已执行迁移被拒；13 条约束用例断言了具体错误码）。反向验证：临时移除金额 CHECK、部分唯一索引、审计触发器后恰好 3 个对应用例失败，恢复后全绿。真实开发库 `npm run migrate --workspace=education-api` 首次执行 5 个迁移，再次执行「没有待执行的迁移」；17 张表全在 `app` schema，`public` 为 0 |
 | T-05 workspace 脚本 | 完成 | `turbo run dev --dry=json`：`--filter=education-agent` 只含 `education-agent#dev`；`--filter=!education-agent` 含 6 个 legacy 任务、不含 education-agent。实测默认 `npm run dev`：8300 返回 200，旧服务端口 4111/5173/8123/8200/6333/8100 均无监听；停止后 8300 释放。`npm run test:education` 5 passed，`npm run contracts:check` 通过。package-lock 仅新增 education-agent 工作区条目（+9 行） |
+| T-07 合成 seed | 完成 | `data/education/seed/seed-data.json`（5 users、1 policy、2 courses、3 course_versions、4 cohorts、8 lessons、3 orders、3 enrollments、6 learning_progress，id 固定为 `00000000-…-0000000000xx`，姓名/课程名均带"（合成数据）"后缀，`orders.source='seed'`）。`npm run seed --workspace=education-api` 幂等写入真实开发库；重复执行后 `select count(*) from app.users`/`app.orders` 行数不变（5/3），验证未产生重复行。覆盖：历史/当前/预告三种班期状态、同课程两个版本、全款与部分退款订单、三种学习进度状态 |
 
 ## 2. T-01 基线盘点
 
@@ -60,6 +62,30 @@
 - Neo4j 镜像把所有 `NEO4J_*` 环境变量当配置解析；给容器加 `NEO4J_PASSWORD` 会因未知设置启动失败。healthcheck 需要的密码用非 `NEO4J_` 前缀名。
 - 第一次"重启验证"因 zsh 未拆词 `$C` 命令根本没执行；读回数据不构成证据，已用容器 StartedAt 变化重做。教训：验证要有"发生过"的证据。
 - `lsof` 显示 5433 由 `ssh` 监听是 Colima 端口转发，非冲突。
+
+### T-06 设计决定
+| 决定 | 理由 |
+|---|---|
+| 纯 SQL 迁移 + 自写约 60 行运行器（schema_migrations 记录 checksum、advisory lock、每个文件一个事务） | 核心价值在部分唯一索引/CHECK/触发器，直接写 SQL 最清晰；备选 Drizzle/Prisma/node-pg-migrate 需绕 TS 定义，约束位置不直观 |
+| 已执行迁移被改动或删除即报错 | 防止不同环境表结构悄悄分叉；改结构只能新增迁移 |
+| T-06 范围取到 M2 所需：users/sessions、courses/versions/policies/cohorts/lessons、orders/enrollments/learning_progress、applications/events/confirmations/idempotency、enrollment_changes/replay_entitlements | conversations、handoffs、knowledge、index_jobs、outbox、replay_segments 留给 M3/M4/M5 迁移，避免提前设计 |
+| 不变量放数据库：金额整数分且 refunded<=paid；每课程一个 current sale；同 enrollment/type 仅一张未结束申请；execution_status 非 not_started 时 status 必须 approved；application_events 追加式（触发器）；一张申请至多一条转班记录；一张申请至多一张有效确认卡 | 应用代码有 bug 时库仍能兜底；与 design §4 一致 |
+| session 只存 token hash；确认卡增加 `revoked_at`（设计仅列 usedAt） | 库泄露拿不到可用 cookie；新卡签发时旧卡需作废，不能借用 usedAt 语义 |
+| 班期状态 upcoming/running/ended；报名状态 active/transferred/ended；enrollments.order_id 唯一 | 规格未给取值，属实现假设，非业务规则，可调整 |
+| 缺失：未校验 orders/enrollments 的 student 必须是 role=student；未约束 refund 申请不应带 target_cohort_id | 留给应用层与 T-08/T-13 |
+
+### T-06 理解检查题（已完成）
+- Q1（部分唯一索引 vs 先查后插）：学员答"能防止业务层 bug 造成不一致"，补充具体机制：先查后插存在 SELECT 到 INSERT 之间的时间窗口，两个并发请求都能在对方提交前读到"未结束申请数=0"，都判定可以插入，最终各自成功、破坏"至多一条未结束申请"的不变量（check-then-act 竞态）。唯一索引把判断下沉到 INSERT 时刻本身，不存在这个窗口。
+- Q2（CHECK 为什么不够，退款还要锁订单重新校验）：学员未答出，已讲解：CHECK 只保证"提交时这一行的最终数值关系成立"，不保证"这次操作基于的是最新值"。两个并发退款请求若都基于同一份旧 `refunded_cents` 读数计算新值，后提交的会覆盖先提交的结果（lost update），且覆盖后的值仍可能满足 `refunded_cents<=paid_cents`，CHECK 全程不会报错——它管不住"基于哪个版本的数据计算"这件事，只有显式锁（`SELECT ... FOR UPDATE`）+ 重新读取校验才能堵住。
+
+### T-07 设计决定
+| 决定 | 理由 |
+|---|---|
+| seed 数据 id 固定为 `00000000-0000-0000-0000-0000000000xx`，姓名/课程名带"（合成数据）"后缀，`orders.source='seed'` | 多重标记确保"数据明确标记合成"：id 本身、可读文本、数据库字段三处都能识别，不依赖单一约定 |
+| seed 用 TS 脚本（非纯 SQL）+ 固定 id 配合 `ON CONFLICT (id) DO UPDATE`，数据本体放 `data/education/seed/seed-data.json` | 密码需要运行时哈希计算，SQL 做不到；用固定 id 做幂等键而非 TRUNCATE 重建，避免每次跑测试清空库里其它手工数据 |
+| 时间字段用相对"现在"的 `daysOffset` 而非写死时间戳 | 历史/当前/预告三种班期状态的时间关系（过去/最近/未来）不会随日期推移过期失真 |
+| 密码哈希用 Node 内置 `scrypt`（`education-api/src/auth/password.ts`），未引入 bcrypt/argon2 依赖 | dev-only 数据，免依赖；格式 `scrypt:salt:hash` 自包含，T-08 登录校验直接复用同一模块，生产前需重新评估 cost 参数 |
+| 所有合成账号共用一个明文开发密码 `edu-dev-pass-001`（写在 README，不是每人随机密码） | 开发/教学场景要能登录测试；生产环境不会有共享密码，已在 README 注明 |
 
 ### T-05 设计决定
 | 决定 | 理由 |

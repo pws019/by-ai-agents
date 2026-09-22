@@ -10,7 +10,8 @@
     "customer-qdrant",
     "customer-logistics-api",
     "customer-frontend",
-    "education-agent"
+    "education-agent",
+    "education-api"
   ],
   "scripts": {
     "postinstall": "patch-package",

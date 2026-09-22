@@ -18,8 +18,8 @@
 
 ## M1：业务事实与身份（16h）
 
-- [ ] T-06（4h）实现核心数据库 migration、状态字段、金额/唯一约束。`education-api/src/db/`。验收：全新数据库迁移与重复执行机制可复现。
-- [ ] T-07（2h）生成合成 seed：2 个历史/当前 AI 班期、可选未来目标、1 个历史课程、3 学员、2 老师、版本差异。`data/education/seed/`。验收：数据明确标记合成、可重复初始化开发库。
+- [x] T-06（4h）实现核心数据库 migration、状态字段、金额/唯一约束。`education-api/src/db/`。验收：全新数据库迁移与重复执行机制可复现。
+- [x] T-07（2h）生成合成 seed：2 个历史/当前 AI 班期、可选未来目标、1 个历史课程、3 学员、2 老师、版本差异。`data/education/seed/`。验收：数据明确标记合成、可重复初始化开发库。
 - [ ] T-08（3h）登录/session/角色/资源授权、内部服务认证。`education-api/src/auth/`、`education-agent/src/auth/`。验收：AC-002/003 的账户与 API 部分通过。
 - [ ] T-09（3h）实现当期、报名、课表、进度、转入目标只读 API。`education-api/src/routes/`。验收：未知事实返回 null/unknown；AC-001 业务查询通过。
 - [ ] T-10（2h）老师基础维护/导入 API：班期、报名、课次、进度。`education-api/src/routes/teacher/`。验收：输入验证和老师权限通过。
