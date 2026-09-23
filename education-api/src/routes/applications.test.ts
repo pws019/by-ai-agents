@@ -163,6 +163,58 @@ describe("POST /applications/drafts", () => {
     const res = await post("/applications/drafts", { type: "refund", enrollmentId, reason: "又想退费" }, studentCookie);
     assert.equal(res.status, 409);
   });
+
+  // T-17：drafts 这个端点本身不认 Idempotency-Key（合约里列了这个 header 参数，但 dedup 靠的
+  // 是 AC-006 的业务唯一约束——同一 enrollment+type 不允许两张未结束的申请，不管客户端带的是
+  // 同一个 key、不同的 key，还是根本没带 key，结果都应该收敛到同一条申请）。
+  test("AC-006：不同 Idempotency-Key 重复创建同一份草稿，业务唯一约束兜底，不产生两条", async () => {
+    const freshEnrollmentId = await createFreshEnrollment();
+    const first = await post(
+      "/applications/drafts",
+      { type: "transfer", enrollmentId: freshEnrollmentId, reason: "第一次提交" },
+      studentCookie,
+      { "Idempotency-Key": "key-a" },
+    );
+    assert.equal(first.status, 201);
+    const firstBody = await first.json();
+
+    const second = await post(
+      "/applications/drafts",
+      { type: "transfer", enrollmentId: freshEnrollmentId, reason: "换个 key 再提交一次" },
+      studentCookie,
+      { "Idempotency-Key": "key-b" },
+    );
+    assert.equal(second.status, 200, "还在 draft 阶段，即使 key 不同也应该收敛成同一条");
+    const secondBody = await second.json();
+    assert.equal(secondBody.id, firstBody.id);
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM applications WHERE enrollment_id = $1 AND type = 'transfer'", [
+      freshEnrollmentId,
+    ]);
+    assert.equal(rows[0]!.n, 1, "不管带了几个不同的 Idempotency-Key，实际只应该有一条 applications 记录");
+  });
+
+  test("AC-006：真并发创建同一 enrollment+type 的草稿，唯一索引只放行一条插入", async () => {
+    const freshEnrollmentId = await createFreshEnrollment();
+    const payload = (reason: string) => ({ type: "transfer" as const, enrollmentId: freshEnrollmentId, reason });
+
+    const [a, b] = await Promise.all([
+      post("/applications/drafts", payload("并发请求 A"), studentCookie),
+      post("/applications/drafts", payload("并发请求 B"), studentCookie),
+    ]);
+    // 谁先抢到唯一索引谁 201，另一个走 catch 分支查到刚插入的那条、还在 draft 阶段，返回 200。
+    const statuses = [a.status, b.status].sort();
+    assert.deepEqual(statuses, [200, 201]);
+
+    const aBody = await a.json();
+    const bBody = await b.json();
+    assert.equal(aBody.id, bBody.id, "两个并发请求最终应该指向同一条申请");
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM applications WHERE enrollment_id = $1 AND type = 'transfer'", [
+      freshEnrollmentId,
+    ]);
+    assert.equal(rows[0]!.n, 1, "真并发下也只应该留下一条 applications 记录，不是两条");
+  });
 });
 
 describe("PATCH /applications/:id/draft", () => {
@@ -344,6 +396,33 @@ describe("POST /applications/:id/confirm", () => {
       [draft.id],
     );
     assert.equal(rows[0]!.n, 1);
+  });
+
+  // confirm/approve/refund-result 共用同一套 checkIdempotency 逻辑（见 applications.ts 的
+  // 共享 helper），这条路径此前完全没有测试碰到过：同一个 key 配不同的请求内容，说明
+  // 客户端把这个 key 用错了地方（不是同一次调用的重试），不能当成合法重放悄悄放行。
+  test("同一个 Idempotency-Key 配不同的请求内容：409 IDEMPOTENCY_KEY_REUSED", async () => {
+    const draftA = await createDraft();
+    const draftB = await createDraft();
+    const headers = { "Idempotency-Key": "confirm-reused-key" };
+
+    const first = await post(
+      `/applications/${draftA.id}/confirm`,
+      { confirmationId: draftA.confirmation.confirmationId, expectedRevision: draftA.revision },
+      studentCookie,
+      headers,
+    );
+    assert.equal(first.status, 200);
+
+    const second = await post(
+      `/applications/${draftB.id}/confirm`,
+      { confirmationId: draftB.confirmation.confirmationId, expectedRevision: draftB.revision },
+      studentCookie,
+      headers,
+    );
+    assert.equal(second.status, 409);
+    const body = await second.json();
+    assert.equal(body.error.code, "IDEMPOTENCY_KEY_REUSED");
   });
 });
 
@@ -619,6 +698,30 @@ describe("POST /teacher/applications/:id/approve", () => {
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM enrollment_changes WHERE application_id = $1", [app1.id]);
     assert.equal(rows[0]!.n, 1, "转班历史只能有一条，不能两个请求都执行了转班");
+  });
+
+  // AC-010：这跟上面 AC-008 是两回事——AC-008 防的是"两个不同的人并发操作同一份最新状态"
+  // （靠 revision），这里防的是"同一次调用，客户端在收到响应前网络超时/断线，用同一个
+  // Idempotency-Key 重试"（靠 idempotency_records 表）。approve 的 Idempotency-Key 分支
+  // 在这之前一直没有测试直接覆盖过。
+  test("AC-010：写入已经成功，但客户端没收到响应就用同一个 Idempotency-Key 重试——不重复执行转班", async () => {
+    const app1 = await submitApplication("transfer", "超时重试", otherCohortId);
+    const payload = { expectedRevision: app1.revision, oldReplayAccess: "keep" as const };
+    const headers = { "Idempotency-Key": "approve-timeout-retry-1" };
+
+    const first = await post(`/teacher/applications/${app1.id}/approve`, payload, teacherCookie, headers);
+    assert.equal(first.status, 200);
+    const firstBody = await first.json();
+    assert.equal(firstBody.executionStatus, "completed");
+
+    // 模拟"服务器其实写完了，但响应没送达客户端"：客户端拿着同一个 key、同一份 body 重试。
+    const retry = await post(`/teacher/applications/${app1.id}/approve`, payload, teacherCookie, headers);
+    assert.equal(retry.status, 200, "重试应该原样拿到第一次的结果，而不是因为申请已经不是 submitted 而报错");
+    const retryBody = await retry.json();
+    assert.deepEqual(retryBody, firstBody, "重放应该是完全一样的响应，不是重新执行了一遍产生的新状态");
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM enrollment_changes WHERE application_id = $1", [app1.id]);
+    assert.equal(rows[0]!.n, 1, "只应该真正执行了一次转班，不是重试一次就多转一次");
   });
 });
 

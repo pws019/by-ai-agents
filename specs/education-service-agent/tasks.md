@@ -34,7 +34,7 @@
 - [x] T-14（4h）老师批准转班事务、权益选项、审计。`education-api/src/routes/applications.ts`。验收：AC-008，并发冲突和事务失败无半成品。outbox 表推迟到 M3/M4/M5（与 T-06 决定一致），本轮范围不含 outbox。
 - [x] T-15（3h）退费协商、批准、人工结果登记与金额边界。`education-api/src/routes/applications.ts`。验收：AC-009；重复登记不重复增加退款额。
 - [x] T-16（4h）我的申请与老师审批页、确认卡片、时间线。`customer-frontend/src/education/`（原计划的 `src/routes/` 是 legacy 聊天 Demo 的路由目录，教育服务前端页面统一放在 `src/education/`，跟 T-11 已有的目录一致）。验收：学生提交→老师处理→学生查询无需聊天即可完成，浏览器真机走通。补了一个后端小缺口：`GET /teacher/cohorts/transfer-targets`（老师提转班方案选目标班期用，原来只有学员版）。
-- [ ] T-17（2h）写入后超时、重复 key、不同 key 重复申请、并发审批集成测试。`education-api/tests/`。验收：AC-006/008/010/022。
+- [x] T-17（2h）写入后超时、重复 key、不同 key 重复申请、并发审批集成测试。测试加在 `education-api/src/routes/applications.test.ts`（原计划的 `education-api/tests/` 目录没有建：这些场景测的就是 applications.ts 的端点，跟 T-12～15 已有的测试用的是同一套 app/db 启动样板，拆到独立目录只会复制这段样板代码，不拆更符合项目一贯的"不为了分而分"原则，跟 T-10 的目录调整是同一个道理）。验收：AC-006/008/010/022，其中 AC-008/022 在 T-14/T-13 已有直接覆盖，这轮补的是此前完全没有测试碰到过的两处：①`POST /applications/drafts` 面对"不同 Idempotency-Key"和"真并发"时是否还能靠业务唯一约束收敛成一条申请；②`approve` 的 Idempotency-Key 重放分支（AC-010，此前只测过 approve 的 revision 并发冲突，没测过它自己的幂等重试）。
 
 阶段门槛：领域闭环可独立工作。讲解事务、幂等、revision 和业务状态为何不交给 LLM。
 
