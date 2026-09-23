@@ -14,6 +14,7 @@
 | T-05 workspace 脚本 | 完成 | `turbo run dev --dry=json`：`--filter=education-agent` 只含 `education-agent#dev`；`--filter=!education-agent` 含 6 个 legacy 任务、不含 education-agent。实测默认 `npm run dev`：8300 返回 200，旧服务端口 4111/5173/8123/8200/6333/8100 均无监听；停止后 8300 释放。`npm run test:education` 5 passed，`npm run contracts:check` 通过。package-lock 仅新增 education-agent 工作区条目（+9 行） |
 | T-07 合成 seed | 完成 | `data/education/seed/seed-data.json`（5 users、1 policy、2 courses、3 course_versions、4 cohorts、8 lessons、3 orders、3 enrollments、6 learning_progress，id 固定为 `00000000-…-0000000000xx`，姓名/课程名均带"（合成数据）"后缀，`orders.source='seed'`）。`npm run seed --workspace=education-api` 幂等写入真实开发库；重复执行后 `select count(*) from app.users`/`app.orders` 行数不变（5/3），验证未产生重复行。覆盖：历史/当前/预告三种班期状态、同课程两个版本、全款与部分退款订单、三种学习进度状态 |
 | T-08 登录/session/资源授权（内部服务认证延后见下） | 完成（本轮范围） | `education-api/src/auth/`（password.ts、session.ts、middleware.ts）+ `src/routes/auth.ts`、`src/routes/me.ts` + `src/app.ts`。`npm test --workspace=education-api`：28 passed，含 password 哈希、登录/会话集成测试、`GET /me/enrollments/:id/progress` 资源级授权（真实临时库 + `app.request()`，非 mock）。反向验证：临时去掉 `/me` 的 `requireAuth` → 从 401 变 500；临时注掉 CSRF 中间件 → 从 403 变 200；临时去掉 progress 查询里的 `student_id` 过滤 → 4 个用例**仍然全绿**（测试夹具里学员各自独立班期，没有共享课次，这个漏洞不在当前用例覆盖范围内，靠代码审查而非测试发现）；均恢复后全绿。真实开发服务器实测（`npm start` 起 8400，真实 T-07 种子账号 `student.chen`）：登录 200 并 Set-Cookie、`/me` 200、无 cookie 401、logout 204 后旧 cookie 401。L-01 资源授权练习由学员手写实现（先给失败测试+骨架+TODO，学员实现，经 3 轮 review：条件取反、SQL 语法错误/表名错误/缺 `student_id` 过滤、箭头函数对象字面量少括号、`any` 换成精确类型，含一处 boolean/string 类型标注错误）。**未开始**：BFF→agent 内部身份签发与校验——当前没有 agent 侧消费方，留到 M3 agent 真正需要调用这些 API 时再实现，避免为不存在的调用方设计协议 |
+| T-09 只读业务 API | 完成 | `education-api/src/routes/`（catalog.ts、me.ts 新增两个端点、cohorts.ts）。`npm test --workspace=education-api`：40 passed。反向验证：`schedule`/`transfer-targets` 各去掉一次 `student_id`/`e.student_id` 过滤 → 对应用例从 404 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`GET /catalog/current` 返回 AI 训练营当前班（含课程标题、v2、价格）；`student.li` 登录后 `/me/enrollments` 返回其唯一报名；`/schedule` 三节课按 position 排序、`hasReplay` 与种子数据一致；`/progress` 只返回真实录入的两条记录；`/cohorts/transfer-targets` 只返回预告班（upcoming）；用 `student.li` 的 cookie 访问 `student.wang` 的报名 id 全部 404 |
 
 ## 2. T-01 基线盘点
 
@@ -98,6 +99,16 @@
 | `withActor` 中间件只解析身份、不做 401；`requireAuth`/`requireRole` 单独挂在需要的路由前 | 同一套身份解析要同时服务"允许匿名"（登录、公开招生信息）和"必须登录"的路由，401 的判断权应该留给具体路由，不能在全局中间件里一刀切 |
 | 端口 8400，前缀 `/api/v1`（沿用契约 `servers`） | 8200/8300 已被 legacy/agent 占用；前缀与 openapi.yaml 保持一致，不是另起一套 |
 | 资源级授权（某条记录是否属于当前 actor）、BFF→agent 内部身份签发与验签，本轮未实现 | design.md §3 要求的核心机制（不能信任浏览器提交的 actor、内部 token 不进模型提示词），属于本项目分层约定里"必须亲手写一遍"的部分；且当前没有具体资源路由（T-09 才有），先留一个明确边界比提前臆造接口更诚实 |
+
+### T-09 设计决定
+| 决定 | 理由 |
+|---|---|
+| `/catalog/current` 用 `is_current_sale = true ORDER BY start_at LIMIT 1` 选一条 | DB 的唯一索引是"每门课程最多一个当期在售班期"，不是全局唯一；系统里理论上可以有多门课程各自在售。契约没给筛选课程的参数，MVP 阶段只展示一个"当期"，取最早开课的一条；等有多课程并行招生的真实需求时再加课程维度的参数，不提前设计 |
+| `publicFacts` 固定返回 `[]` | 数据库没有对应的营销文案字段，契约也没说数据来源；不编造内容，比拼一句假文案更诚实 |
+| `Enrollment.rights` 固定返回 `[]` | 契约里这个字段的 description 写的是"来自订单绑定的协议版本"，和同一个 schema 里的 `policyVersion` 字段语义重复，怀疑是契约本身的笔误；语义不清楚时不猜测填充，留空更安全 |
+| `/cohorts/transfer-targets` 候选规则：同课程、未结束（upcoming/running）、排除当前班期 | 契约只说"已建立的可展示目标；不承诺批准"，没给具体规则；这是一个业务假设，真正的转班资格判断在 M2 老师审批时做（T-14），这里只负责"有哪些班期可以选" |
+| price_cents 等 bigint 字段在路由里显式 `Number()` 转换 | pg 驱动把 bigint 序列化成字符串防止精度丢失；不转换会让响应里的数字变成字符串，与 OpenAPI 的 `integer` 类型不符 |
+| schedule/progress/transfer-targets 三个端点都复用"把 actor.id/student_id 放进 WHERE、不存在与非本人统一 404"这个模式 | 和 T-08 练习里学员写的 `progress` 端点保持同一套判断方式，避免同一类授权逻辑在不同端点用不同写法、增加以后审查的心智负担 |
 
 ### T-05 设计决定
 | 决定 | 理由 |
