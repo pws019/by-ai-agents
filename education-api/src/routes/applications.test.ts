@@ -99,19 +99,21 @@ after(async () => {
 });
 
 /** 建一条新报名、走完 draft→confirm，返回已经是 submitted 状态的申请（供 T-13 各用例做起点）。 */
-async function submitApplication(type: "transfer" | "refund" = "transfer", reason = "T-13 用例起点"): Promise<{
-  id: string;
-  revision: number;
-}> {
+async function submitApplication(
+  type: "transfer" | "refund" = "transfer",
+  reason = "T-13 用例起点",
+  targetCohortId?: string,
+): Promise<{ id: string; revision: number; enrollmentId: string }> {
   const freshEnrollmentId = await createFreshEnrollment();
-  const draftRes = await post("/applications/drafts", { type, enrollmentId: freshEnrollmentId, reason }, studentCookie);
+  const draftRes = await post("/applications/drafts", { type, enrollmentId: freshEnrollmentId, reason, targetCohortId }, studentCookie);
   const draft = await draftRes.json();
   const confirmRes = await post(
     `/applications/${draft.id}/confirm`,
     { confirmationId: draft.confirmation.confirmationId, expectedRevision: draft.revision },
     studentCookie,
   );
-  return confirmRes.json();
+  const submitted = await confirmRes.json();
+  return { ...submitted, enrollmentId: freshEnrollmentId };
 }
 
 const req = (method: string, path: string, body: unknown, cookie?: string, extraHeaders?: Record<string, string>) =>
@@ -509,5 +511,113 @@ describe("POST /teacher/applications/:id/reject", () => {
 
     const { rows } = await pool.query("SELECT revoked_at FROM confirmations WHERE id = $1", [proposed.pendingConfirmation.confirmationId]);
     assert.ok(rows[0]!.revoked_at, "拒绝申请之后，还没被消费的确认卡应该被撤销");
+  });
+});
+
+describe("POST /teacher/applications/:id/approve", () => {
+  test("转班：草稿时就知道目标 + oldReplayAccess=keep —— 报名真的换班期，留一条转班历史和一条回放权益", async () => {
+    const app1 = await submitApplication("transfer", "直接知道目标", otherCohortId);
+    const res = await post(
+      `/teacher/applications/${app1.id}/approve`,
+      { expectedRevision: app1.revision, oldReplayAccess: "keep" },
+      teacherCookie,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "approved");
+    assert.equal(body.executionStatus, "completed");
+
+    const { rows: enrollmentRows } = await pool.query("SELECT cohort_id, revision FROM enrollments WHERE id = $1", [app1.enrollmentId]);
+    assert.equal(enrollmentRows[0]!.cohort_id, otherCohortId, "报名的 cohort_id 应该真的变成目标班期");
+
+    const { rows: changeRows } = await pool.query("SELECT from_cohort_id, to_cohort_id FROM enrollment_changes WHERE application_id = $1", [
+      app1.id,
+    ]);
+    assert.equal(changeRows.length, 1);
+    assert.equal(changeRows[0]!.to_cohort_id, otherCohortId);
+    assert.equal(changeRows[0]!.from_cohort_id, cohortId);
+
+    const { rows: entitlementRows } = await pool.query(
+      "SELECT cohort_id FROM replay_entitlements WHERE source_application_id = $1",
+      [app1.id],
+    );
+    assert.equal(entitlementRows.length, 1, "oldReplayAccess=keep 应该留一条旧班期的回放权益");
+    assert.equal(entitlementRows[0]!.cohort_id, cohortId);
+  });
+
+  test("转班：oldReplayAccess=revoke —— 不产生回放权益记录", async () => {
+    const app1 = await submitApplication("transfer", "换个理由", otherCohortId);
+    const res = await post(
+      `/teacher/applications/${app1.id}/approve`,
+      { expectedRevision: app1.revision, oldReplayAccess: "revoke" },
+      teacherCookie,
+    );
+    assert.equal(res.status, 200);
+
+    const { rows } = await pool.query("SELECT 1 FROM replay_entitlements WHERE source_application_id = $1", [app1.id]);
+    assert.equal(rows.length, 0);
+  });
+
+  test("转班没给 oldReplayAccess：422", async () => {
+    const app1 = await submitApplication("transfer", "缺参数", otherCohortId);
+    const res = await post(`/teacher/applications/${app1.id}/approve`, { expectedRevision: app1.revision }, teacherCookie);
+    assert.equal(res.status, 422);
+  });
+
+  test("目标未知（没走 propose 就直接 approve）：409", async () => {
+    const app1 = await submitApplication("transfer", "没有目标");
+    const res = await post(
+      `/teacher/applications/${app1.id}/approve`,
+      { expectedRevision: app1.revision, oldReplayAccess: "keep" },
+      teacherCookie,
+    );
+    assert.equal(res.status, 409);
+  });
+
+  test("退费：只标记 approved+pending，不改任何报名/权益数据", async () => {
+    const app1 = await submitApplication("refund", "申请退费");
+    const res = await post(`/teacher/applications/${app1.id}/approve`, { expectedRevision: app1.revision }, teacherCookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "approved");
+    assert.equal(body.executionStatus, "pending", "退费批准不代表已经打钱");
+
+    const { rows } = await pool.query("SELECT cohort_id FROM enrollments WHERE id = $1", [app1.enrollmentId]);
+    assert.equal(rows[0]!.cohort_id, cohortId, "退费批准不应该动报名的班期");
+  });
+
+  test("内容在学员确认之后又变过（revision 和 confirmed_revision 不一致）：409，不是用最新 revision 就能批", async () => {
+    const app1 = await submitApplication("transfer", "先确认", otherCohortId);
+    // 老师要求补充信息，学员补充：revision 往前走了两格，但没人重新"确认"过这两次变化
+    await post(`/teacher/applications/${app1.id}/request-info`, { question: "补充下", expectedRevision: app1.revision }, teacherCookie);
+    const supplementRes = await post(
+      `/applications/${app1.id}/supplement`,
+      { text: "补充说明", expectedRevision: app1.revision + 1 },
+      studentCookie,
+    );
+    const supplemented = await supplementRes.json();
+    assert.equal(supplemented.revision, app1.revision + 2);
+
+    const res = await post(
+      `/teacher/applications/${app1.id}/approve`,
+      { expectedRevision: supplemented.revision, oldReplayAccess: "keep" },
+      teacherCookie,
+    );
+    assert.equal(res.status, 409, "revision 对得上，但 confirmed_revision 还停在最初确认那次，不该被批准");
+  });
+
+  test("AC-008：两位老师并发批准同一张申请，只执行一次", async () => {
+    const app1 = await submitApplication("transfer", "并发批准", otherCohortId);
+    const payload = { expectedRevision: app1.revision, oldReplayAccess: "keep" as const };
+
+    const [a, b] = await Promise.all([
+      post(`/teacher/applications/${app1.id}/approve`, payload, teacherCookie),
+      post(`/teacher/applications/${app1.id}/approve`, payload, teacherCookie),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    assert.deepEqual(statuses, [200, 409], "应该恰好一个成功、一个因为 revision 冲突失败");
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM enrollment_changes WHERE application_id = $1", [app1.id]);
+    assert.equal(rows[0]!.n, 1, "转班历史只能有一条，不能两个请求都执行了转班");
   });
 });

@@ -8,7 +8,7 @@ import { Hono } from "hono";
 import { requireAuth, requireRole } from "../auth/middleware.js";
 import { isUniqueViolation } from "../db/pgError.js";
 import type { Db } from "../db/pool.js";
-import { applicationEvents, applications, cohorts, confirmations, enrollments } from "../db/schema.js";
+import { applicationEvents, applications, cohorts, confirmations, enrollmentChanges, enrollments, replayEntitlements } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import { claimIdempotencyKey, fulfillIdempotencyKey } from "../idempotency.js";
 
@@ -645,6 +645,125 @@ export function createApplicationRoutes(db: Db): Hono {
     if (!result) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
 
     return c.json({ ...toApplication(result.row, result.confirmation) });
+  });
+
+  // POST /teacher/applications/:id/approve —— 转班在事务内直接变更报名和回放权益，
+  // 执行完成（executionStatus=completed）；退费只表示"同意"，不代表已经打钱，
+  // executionStatus 停在 pending，真正登记执行结果是 T-15 的 refund-result。
+  //
+  // AC-008（两位老师并发批准只执行一次）靠一条 UPDATE 的 WHERE 同时锁死三件事：
+  // revision 等于 expectedRevision、confirmed_revision 等于 revision（内容没有在学员
+  // 确认之后又变过，见 progress.md T-13 的 revision/confirmed_revision 时序图）、
+  // status 还是 submitted。三个条件全在一条语句里原子判断，不是分开先查后判断。
+  app.post("/teacher/applications/:applicationId/approve", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (!body || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "expectedRevision 必填");
+    }
+    const idempotencyKey = c.req.header("Idempotency-Key");
+
+    const [existing] = await db.select().from(applications).where(eq(applications.id, applicationId));
+    if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+
+    if (existing.type === "transfer" && body.oldReplayAccess !== "keep" && body.oldReplayAccess !== "revoke") {
+      return errorJson(c, 422, "VALIDATION_ERROR", "转班批准必须给 oldReplayAccess: keep/revoke");
+    }
+
+    // Idempotency-Key 重放：跟 confirm 同一套规则，只信任真的成功过（留了 result_id）的记录，
+    // 半途失败的不算数，重试要重新走一遍。
+    if (idempotencyKey) {
+      const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+      const claim = await claimIdempotencyKey(db, actor.id, "approveApplication", idempotencyKey, requestHash);
+      if (claim.kind === "conflict") {
+        return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
+      }
+      if (claim.kind === "replay" && claim.resultId) {
+        const [row] = await db.select().from(applications).where(eq(applications.id, claim.resultId));
+        return c.json(toApplication(row!));
+      }
+    }
+
+    let targetCohortId: string | null = null;
+    if (existing.type === "transfer") {
+      // 目标以老师方案为准，没有方案就用草稿当初就知道的目标（见 T-13 设计决定的兜底链）。
+      targetCohortId = existing.proposal?.targetCohortId ?? existing.targetCohortId;
+      if (!targetCohortId) return errorJson(c, 409, "INVALID_STATE", "转班目标还没确定，不能批准");
+    }
+
+    class ApproveConflict extends Error {}
+
+    try {
+      const updated = await db.transaction(async (tx) => {
+        // 三个条件都进 WHERE：revision 对得上、confirmed_revision 对得上 revision（没有
+        // 在学员确认之后又被改过）、状态还是 submitted。一次只有一个并发请求能匹配到行。
+        const [row] = await tx
+          .update(applications)
+          .set({
+            status: "approved",
+            executionStatus: existing.type === "transfer" ? "completed" : "pending",
+            revision: sql`${applications.revision} + 1`,
+          })
+          .where(
+            and(
+              eq(applications.id, applicationId),
+              eq(applications.revision, body.expectedRevision),
+              eq(applications.confirmedRevision, body.expectedRevision),
+              eq(applications.status, "submitted"),
+            ),
+          )
+          .returning();
+        if (!row) throw new ApproveConflict();
+
+        if (existing.type === "transfer") {
+          const [enrollment] = await tx.select().from(enrollments).where(eq(enrollments.id, existing.enrollmentId));
+          if (!enrollment) throw new Error("申请指向的报名不存在，数据不一致");
+          const fromCohortId = enrollment.cohortId;
+
+          await tx
+            .update(enrollments)
+            .set({ cohortId: targetCohortId!, revision: sql`${enrollments.revision} + 1` })
+            .where(eq(enrollments.id, enrollment.id));
+
+          // 一张申请最多一条转班记录，唯一约束兜底：并发批准就算撞开了前面的 revision 判断
+          // （理论上不会），这里也会因为 application_id 唯一而拦第二次插入。
+          await tx.insert(enrollmentChanges).values({
+            enrollmentId: enrollment.id,
+            fromCohortId,
+            toCohortId: targetCohortId!,
+            applicationId,
+            teacherId: actor.id,
+          });
+
+          if (body.oldReplayAccess === "keep") {
+            await tx.insert(replayEntitlements).values({
+              studentId: existing.studentId,
+              cohortId: fromCohortId,
+              sourceApplicationId: applicationId,
+            });
+          }
+        }
+
+        await tx.insert(applicationEvents).values({
+          applicationId,
+          actorId: actor.id,
+          eventType: "approved",
+          revision: row.revision,
+          details: existing.type === "transfer" ? { targetCohortId, oldReplayAccess: body.oldReplayAccess } : {},
+        });
+
+        return row;
+      });
+
+      if (idempotencyKey) await fulfillIdempotencyKey(db, actor.id, "approveApplication", idempotencyKey, applicationId);
+      return c.json(toApplication(updated));
+    } catch (err) {
+      if (err instanceof ApproveConflict) {
+        return errorJson(c, 409, "REVISION_CONFLICT", "申请已被其他老师处理，或内容在学员确认之后又变过");
+      }
+      throw err;
+    }
   });
 
   // POST /teacher/applications/:id/reject —— 终态拒绝整张申请（不是拒绝某个方案，那是
