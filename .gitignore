@@ -49,3 +49,7 @@ infra/education/.env
 education-agent/.venv/
 __pycache__/
 .pytest_cache/
+
+# education-api（TypeScript）：依赖与构建产物
+education-api/node_modules/
+education-api/dist/
