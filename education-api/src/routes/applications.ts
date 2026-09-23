@@ -267,8 +267,9 @@ export function createApplicationRoutes(db: Db): Hono {
 
     try {
       const updated = await db.transaction(async (tx) => {
-        // 把"确认卡还没被用过"和"标记为已用"合并进同一条 UPDATE：两个并发请求同时到达，
-        // 数据库保证只有一个能匹配到行，另一个原子地拿到空结果——不是先 SELECT 判断再 UPDATE。
+        // 把"确认卡还没被用过""revision 对得上"和"标记为已用"合并进同一条 UPDATE：
+        // 两个并发请求同时到达，数据库保证只有一个能匹配到行，另一个原子地拿到空结果——
+        // 不是先 SELECT/UPDATE 判断再在 JS 里比对，那样会先把卡"烧掉"再发现不该烧。
         const [claimed] = await tx
           .update(confirmations)
           .set({ usedAt: sql`now()` })
@@ -276,13 +277,14 @@ export function createApplicationRoutes(db: Db): Hono {
             and(
               eq(confirmations.id, body.confirmationId),
               eq(confirmations.applicationId, applicationId),
+              eq(confirmations.revision, body.expectedRevision),
               isNull(confirmations.usedAt),
               isNull(confirmations.revokedAt),
               gt(confirmations.expiresAt, sql`now()`),
             ),
           )
           .returning({ revision: confirmations.revision });
-        if (!claimed || claimed.revision !== body.expectedRevision) throw new StaleConfirmation();
+        if (!claimed) throw new StaleConfirmation();
         const revision = claimed.revision;
 
         // 同理，revision/status 校验也写进这条 UPDATE 的 WHERE，不是先查再判断——两者是同一个 TOCTOU 坑。
