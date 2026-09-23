@@ -26,13 +26,14 @@ let admin: pg.Client;
 let pool: pg.Pool;
 let app: ReturnType<typeof createApp>;
 
-// 两个学员，各自一条报名、一节课的学习进度。用来验证"我的"和"别人的"的边界。
-let studentA: { id: string; enrollmentId: string; lessonId: string; cookie: string };
-let studentB: { id: string; enrollmentId: string; cookie: string };
+// 两个学员，各自一条报名、两节课（一节有回放、一节没有）。用来验证"我的"和"别人的"的边界。
+type Student = { id: string; enrollmentId: string; lessonId: string; lessonId2: string; cookie: string };
+let studentA: Student;
+let studentB: Student;
 
 let policyVersionCounter = 0;
 
-async function setupStudent(loginName: string): Promise<{ id: string; enrollmentId: string; lessonId: string }> {
+async function setupStudent(loginName: string): Promise<Omit<Student, "cookie">> {
   const q = <T extends pg.QueryResultRow = pg.QueryResultRow>(sql: string, params: unknown[] = []) =>
     pool.query<T>(sql, params);
   const id = async (sql: string, params: unknown[] = []) => (await q<{ id: string }>(sql, params)).rows[0]!.id;
@@ -48,6 +49,10 @@ async function setupStudent(loginName: string): Promise<{ id: string; enrollment
     [courseId, versionId],
   );
   const lessonId = await id("INSERT INTO lessons (cohort_id, title, position) VALUES ($1,'第 1 课',1) RETURNING id", [cohortId]);
+  const lessonId2 = await id(
+    "INSERT INTO lessons (cohort_id, title, position, replay_asset_key) VALUES ($1,'第 2 课',2,'replay/x.mp4') RETURNING id",
+    [cohortId],
+  );
   // policies.version 全局唯一，每个学员各自的课程/班期不共用同一个 policy，版本号要错开
   const policyId = await id("INSERT INTO policies (version, text) VALUES ($1,'合成政策') RETURNING id", [++policyVersionCounter]);
   const orderId = await id(
@@ -62,7 +67,7 @@ async function setupStudent(loginName: string): Promise<{ id: string; enrollment
     studentId,
     lessonId,
   ]);
-  return { id: studentId, enrollmentId, lessonId };
+  return { id: studentId, enrollmentId, lessonId, lessonId2 };
 }
 
 async function loginCookie(userId: string): Promise<string> {
@@ -119,5 +124,45 @@ describe("GET /me/enrollments/:id/progress —— 资源级授权", () => {
     const [a, b] = [await forOther.json(), await forFake.json()];
     assert.equal(a.error.code, b.error.code);
     assert.equal(a.error.message, b.error.message); // requestId 各请求不同，不比较它
+  });
+});
+
+describe("GET /me/enrollments", () => {
+  test("没登录：401", async () => {
+    assert.equal((await get("/me/enrollments")).status, 401);
+  });
+
+  test("只看到自己的报名，字段齐全", async () => {
+    const res = await get("/me/enrollments", studentA.cookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.items.length, 1);
+    const item = body.items[0];
+    assert.equal(item.enrollmentId, studentA.enrollmentId);
+    assert.equal(item.status, "active");
+    assert.equal(item.revision, 1);
+    assert.equal(typeof item.policyVersion, "number");
+    assert.equal(item.cohort.name, "合成班期");
+  });
+});
+
+describe("GET /me/enrollments/:id/schedule", () => {
+  test("没登录：401", async () => {
+    assert.equal((await get(`/me/enrollments/${studentA.enrollmentId}/schedule`)).status, 401);
+  });
+
+  test("自己的报名：按 position 排序，hasReplay 反映是否有回放", async () => {
+    const res = await get(`/me/enrollments/${studentA.enrollmentId}/schedule`, studentA.cookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.items, [
+      { lessonId: studentA.lessonId, title: "第 1 课", order: 1, hasReplay: false },
+      { lessonId: studentA.lessonId2, title: "第 2 课", order: 2, hasReplay: true },
+    ]);
+  });
+
+  test("别人的报名 id：404", async () => {
+    const res = await get(`/me/enrollments/${studentA.enrollmentId}/schedule`, studentB.cookie);
+    assert.equal(res.status, 404);
   });
 });
