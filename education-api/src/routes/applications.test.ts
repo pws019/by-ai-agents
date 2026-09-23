@@ -98,6 +98,22 @@ after(async () => {
   await admin.end();
 });
 
+/** 建一条新报名、走完 draft→confirm，返回已经是 submitted 状态的申请（供 T-13 各用例做起点）。 */
+async function submitApplication(type: "transfer" | "refund" = "transfer", reason = "T-13 用例起点"): Promise<{
+  id: string;
+  revision: number;
+}> {
+  const freshEnrollmentId = await createFreshEnrollment();
+  const draftRes = await post("/applications/drafts", { type, enrollmentId: freshEnrollmentId, reason }, studentCookie);
+  const draft = await draftRes.json();
+  const confirmRes = await post(
+    `/applications/${draft.id}/confirm`,
+    { confirmationId: draft.confirmation.confirmationId, expectedRevision: draft.revision },
+    studentCookie,
+  );
+  return confirmRes.json();
+}
+
 const req = (method: string, path: string, body: unknown, cookie?: string, extraHeaders?: Record<string, string>) =>
   app.request(`/api/v1${path}`, {
     method,
@@ -326,5 +342,172 @@ describe("POST /applications/:id/confirm", () => {
       [draft.id],
     );
     assert.equal(rows[0]!.n, 1);
+  });
+});
+
+describe("POST /applications/:id/supplement", () => {
+  test("非 needs_info 状态：409", async () => {
+    const app1 = await submitApplication();
+    const res = await post(`/applications/${app1.id}/supplement`, { text: "补充", expectedRevision: app1.revision }, studentCookie);
+    assert.equal(res.status, 409);
+  });
+
+  test("老师要求补充后，学员补充：回到 submitted，留一条审计事件", async () => {
+    const app1 = await submitApplication();
+    await post(`/teacher/applications/${app1.id}/request-info`, { question: "能说说原因吗", expectedRevision: app1.revision }, teacherCookie);
+
+    const res = await post(`/applications/${app1.id}/supplement`, { text: "详细原因", expectedRevision: app1.revision + 1 }, studentCookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "submitted");
+    assert.equal(body.revision, app1.revision + 2);
+
+    const { rows } = await pool.query(
+      "SELECT event_type, details FROM application_events WHERE application_id = $1 AND event_type = 'supplement'",
+      [app1.id],
+    );
+    assert.equal(rows[0]!.details.text, "详细原因");
+  });
+});
+
+describe("POST /applications/:id/withdraw", () => {
+  test("submitted 状态可以撤回", async () => {
+    const app1 = await submitApplication();
+    const res = await post(`/applications/${app1.id}/withdraw`, { expectedRevision: app1.revision }, studentCookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "withdrawn");
+  });
+
+  test("AC-022：撤回之后老师再处理（用撤回前的 expectedRevision）：409，不再变更报名", async () => {
+    const app1 = await submitApplication();
+    const withdrawRes = await post(`/applications/${app1.id}/withdraw`, { expectedRevision: app1.revision }, studentCookie);
+    assert.equal(withdrawRes.status, 200);
+
+    const res = await post(
+      `/teacher/applications/${app1.id}/request-info`,
+      { question: "还能处理吗", expectedRevision: app1.revision },
+      teacherCookie,
+    );
+    assert.equal(res.status, 409);
+
+    const { rows } = await pool.query("SELECT status FROM applications WHERE id = $1", [app1.id]);
+    assert.equal(rows[0]!.status, "withdrawn", "老师的操作不能让已撤回的申请变回其它状态");
+  });
+
+  test("已批准状态不能撤回", async () => {
+    const app1 = await submitApplication();
+    await pool.query("UPDATE applications SET status = 'approved' WHERE id = $1", [app1.id]);
+    const res = await post(`/applications/${app1.id}/withdraw`, { expectedRevision: app1.revision }, studentCookie);
+    assert.equal(res.status, 409);
+  });
+});
+
+describe("老师提出方案与学员回应（propose / proposal-response）", () => {
+  test("非 submitted 状态不能提方案：409", async () => {
+    const app1 = await submitApplication();
+    await post(`/teacher/applications/${app1.id}/request-info`, { question: "q", expectedRevision: app1.revision }, teacherCookie);
+    const res = await post(
+      `/teacher/applications/${app1.id}/propose`,
+      { targetCohortId: otherCohortId, reason: "建议转班", expectedRevision: app1.revision + 1 },
+      teacherCookie,
+    );
+    assert.equal(res.status, 409);
+  });
+
+  test("转班方案没给 targetCohortId：422", async () => {
+    const app1 = await submitApplication("transfer");
+    const res = await post(`/teacher/applications/${app1.id}/propose`, { reason: "建议转班", expectedRevision: app1.revision }, teacherCookie);
+    assert.equal(res.status, 422);
+  });
+
+  test("完整流程：propose → 学员 accept → submitted，proposal 保留；再 accept 用旧卡是 409", async () => {
+    const app1 = await submitApplication("transfer");
+    const proposeRes = await post(
+      `/teacher/applications/${app1.id}/propose`,
+      { targetCohortId: otherCohortId, reason: "建议转到新班", expectedRevision: app1.revision },
+      teacherCookie,
+    );
+    assert.equal(proposeRes.status, 200);
+    const proposed = await proposeRes.json();
+    assert.equal(proposed.status, "awaiting_student_confirmation");
+    assert.equal(proposed.summary.targetCohortId, otherCohortId, "摘要要反映方案里的目标班期，不是草稿原来的");
+    assert.ok(proposed.pendingConfirmation.confirmationId);
+
+    const acceptRes = await post(
+      `/applications/${app1.id}/proposal-response`,
+      { accept: true, confirmationId: proposed.pendingConfirmation.confirmationId, expectedRevision: proposed.revision },
+      studentCookie,
+    );
+    assert.equal(acceptRes.status, 200);
+    const accepted = await acceptRes.json();
+    assert.equal(accepted.status, "submitted");
+    assert.equal(accepted.revision, proposed.revision, "accept 不改 revision");
+    assert.equal(accepted.proposal.targetCohortId, otherCohortId, "接受后方案还在，留给 T-14 approve 用");
+
+    const replay = await post(
+      `/applications/${app1.id}/proposal-response`,
+      { accept: true, confirmationId: proposed.pendingConfirmation.confirmationId, expectedRevision: proposed.revision },
+      studentCookie,
+    );
+    assert.equal(replay.status, 409, "同一张确认卡已经用过，不是幂等重放（proposal-response 没有类似 confirm 的重放豁免）");
+  });
+
+  test("拒绝方案：回到 submitted，proposal 清空，revision 前进一格；不自动执行任何变更", async () => {
+    const app1 = await submitApplication("refund");
+    const proposeRes = await post(
+      `/teacher/applications/${app1.id}/propose`,
+      { refundCents: 5000, reason: "同意部分退款", expectedRevision: app1.revision },
+      teacherCookie,
+    );
+    const proposed = await proposeRes.json();
+
+    const rejectRes = await post(
+      `/applications/${app1.id}/proposal-response`,
+      { accept: false, confirmationId: proposed.pendingConfirmation.confirmationId, expectedRevision: proposed.revision },
+      studentCookie,
+    );
+    assert.equal(rejectRes.status, 200);
+    const rejected = await rejectRes.json();
+    assert.equal(rejected.status, "submitted");
+    assert.equal(rejected.proposal, null);
+    assert.equal(rejected.revision, proposed.revision + 1);
+    assert.equal(rejected.executionStatus, "not_started", "拒绝方案不代表执行了任何退款/转班");
+  });
+});
+
+describe("GET /teacher/applications", () => {
+  test("学员访问：403", async () => {
+    const res = await get("/teacher/applications", studentCookie);
+    assert.equal(res.status, 403);
+  });
+
+  test("按 status 过滤", async () => {
+    const app1 = await submitApplication();
+    const res = await get(`/teacher/applications?status=submitted`, teacherCookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.items.some((a: { id: string }) => a.id === app1.id));
+    assert.ok(body.items.every((a: { status: string }) => a.status === "submitted"));
+  });
+});
+
+describe("POST /teacher/applications/:id/reject", () => {
+  test("拒绝申请：终态 rejected，撤销活着的确认卡", async () => {
+    const app1 = await submitApplication("transfer");
+    const proposeRes = await post(
+      `/teacher/applications/${app1.id}/propose`,
+      { targetCohortId: otherCohortId, reason: "先提个方案", expectedRevision: app1.revision },
+      teacherCookie,
+    );
+    const proposed = await proposeRes.json();
+
+    const res = await post(`/teacher/applications/${app1.id}/reject`, { reason: "最终不批准", expectedRevision: proposed.revision }, teacherCookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "rejected");
+
+    const { rows } = await pool.query("SELECT revoked_at FROM confirmations WHERE id = $1", [proposed.pendingConfirmation.confirmationId]);
+    assert.ok(rows[0]!.revoked_at, "拒绝申请之后，还没被消费的确认卡应该被撤销");
   });
 });

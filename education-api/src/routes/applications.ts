@@ -3,8 +3,9 @@
 // draft 阶段可以反复 PATCH，每次编辑都让旧确认卡失效——这是 AC-005 的来源。
 import { createHash } from "node:crypto";
 import { and, desc, eq, gt, isNull, notInArray, sql } from "drizzle-orm";
+import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireRole } from "../auth/middleware.js";
 import { isUniqueViolation } from "../db/pgError.js";
 import type { Db } from "../db/pool.js";
 import { applicationEvents, applications, cohorts, confirmations, enrollments } from "../db/schema.js";
@@ -24,7 +25,9 @@ function summaryOf(row: ApplicationRow) {
     type: row.type,
     enrollmentId: row.enrollmentId,
     reason: row.reason,
-    targetCohortId: row.targetCohortId,
+    // 老师提出方案后，proposal 里的值才是"学员正在被要求确认的东西"；原始草稿的
+    // target_cohort_id 只在还没有方案时才作数，不能两个字段各显示各的，让摘要和确认卡对不上。
+    targetCohortId: row.proposal?.targetCohortId ?? row.targetCohortId,
     refundCents: row.proposal?.refundCents ?? null,
   };
 }
@@ -77,6 +80,69 @@ async function issueConfirmation(db: Db, actorId: string, row: ApplicationRow): 
   return inserted!;
 }
 
+// 撤销这张申请当前还活着的确认卡（如果有）。撤销不是删除，审计要留痕；也不强制要求
+// 一定存在活着的卡——PATCH draft/withdraw/reject 都可能在"根本没有活着的卡"时调用它。
+async function revokeActiveConfirmation(db: Db, applicationId: string): Promise<void> {
+  await db
+    .update(confirmations)
+    .set({ revokedAt: sql`now()` })
+    .where(and(eq(confirmations.applicationId, applicationId), isNull(confirmations.usedAt), isNull(confirmations.revokedAt)));
+}
+
+class StaleConfirmation extends Error {}
+
+// confirm 和 proposal-response 共用的核心动作：原子地"claim 一张确认卡"，紧接着在同一个事务里
+// 把申请从 fromStatus 转到 set.status。两步中任何一步没匹配到行都抛 StaleConfirmation，
+// 事务自动整体回滚——不会出现"卡被消费了但申请没转态"的半成品。
+// 调用方负责决定 set 里要不要带 revision（是否算作一次内容变更，见 progress.md T-13 设计决定）。
+async function claimConfirmationAndTransition(
+  db: Db,
+  args: {
+    confirmationId: string;
+    applicationId: string;
+    expectedRevision: number;
+    fromStatus: ApplicationRow["status"];
+    set: PgUpdateSetSource<typeof applications>;
+    actorId: string;
+    eventType: string;
+    eventDetails?: Record<string, unknown>;
+  },
+): Promise<ApplicationRow> {
+  return db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .update(confirmations)
+      .set({ usedAt: sql`now()` })
+      .where(
+        and(
+          eq(confirmations.id, args.confirmationId),
+          eq(confirmations.applicationId, args.applicationId),
+          eq(confirmations.revision, args.expectedRevision),
+          isNull(confirmations.usedAt),
+          isNull(confirmations.revokedAt),
+          gt(confirmations.expiresAt, sql`now()`),
+        ),
+      )
+      .returning({ revision: confirmations.revision });
+    if (!claimed) throw new StaleConfirmation();
+
+    const [row] = await tx
+      .update(applications)
+      .set(args.set)
+      .where(and(eq(applications.id, args.applicationId), eq(applications.revision, args.expectedRevision), eq(applications.status, args.fromStatus)))
+      .returning();
+    if (!row) throw new StaleConfirmation();
+
+    await tx.insert(applicationEvents).values({
+      applicationId: args.applicationId,
+      actorId: args.actorId,
+      eventType: args.eventType,
+      revision: row.revision,
+      details: args.eventDetails ?? {},
+    });
+    return row;
+  });
+}
+
 // 简单的不透明游标：base64("created_at|id")，按 (created_at, id) 降序翻页。
 function encodeCursor(row: { createdAt: Date; id: string }): string {
   return Buffer.from(`${row.createdAt.toISOString()}|${row.id}`).toString("base64url");
@@ -94,6 +160,7 @@ export function createApplicationRoutes(db: Db): Hono {
   const app = new Hono();
   app.use("/applications/*", requireAuth);
   app.use("/me/applications", requireAuth);
+  app.use("/teacher/applications/*", requireAuth, requireRole("teacher"));
 
   // POST /applications/drafts —— 新建一张申请草稿。同一 enrollment+type 已经有一张"未结束"
   // 的申请时（唯一索引 applications_one_open_per_enrollment_type 兜底），不是直接报错：
@@ -204,10 +271,7 @@ export function createApplicationRoutes(db: Db): Hono {
       return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
     }
 
-    await db
-      .update(confirmations)
-      .set({ revokedAt: sql`now()` })
-      .where(and(eq(confirmations.applicationId, applicationId), isNull(confirmations.usedAt), isNull(confirmations.revokedAt)));
+    await revokeActiveConfirmation(db, applicationId);
     const confirmation = await issueConfirmation(db, actor.id, updated);
     return c.json(toApplicationDraft(updated, confirmation));
   });
@@ -263,46 +327,134 @@ export function createApplicationRoutes(db: Db): Hono {
       return errorJson(c, 409, "INVALID_STATE", "只有草稿状态的申请可以确认");
     }
 
-    class StaleConfirmation extends Error {}
-
     try {
-      const updated = await db.transaction(async (tx) => {
-        // 把"确认卡还没被用过""revision 对得上"和"标记为已用"合并进同一条 UPDATE：
-        // 两个并发请求同时到达，数据库保证只有一个能匹配到行，另一个原子地拿到空结果——
-        // 不是先 SELECT/UPDATE 判断再在 JS 里比对，那样会先把卡"烧掉"再发现不该烧。
-        const [claimed] = await tx
-          .update(confirmations)
-          .set({ usedAt: sql`now()` })
-          .where(
-            and(
-              eq(confirmations.id, body.confirmationId),
-              eq(confirmations.applicationId, applicationId),
-              eq(confirmations.revision, body.expectedRevision),
-              isNull(confirmations.usedAt),
-              isNull(confirmations.revokedAt),
-              gt(confirmations.expiresAt, sql`now()`),
-            ),
-          )
-          .returning({ revision: confirmations.revision });
-        if (!claimed) throw new StaleConfirmation();
-        const revision = claimed.revision;
-
-        // 同理，revision/status 校验也写进这条 UPDATE 的 WHERE，不是先查再判断——两者是同一个 TOCTOU 坑。
-        // 理论上不该在这里失败（PATCH 会连带撤销旧确认卡）；失败说明前面哪个假设被打破了，
-        // 抛错让整个事务（包括上面刚 claim 的确认卡）一起回滚，不留半成品状态。
-        const [row] = await tx
-          .update(applications)
-          .set({ status: "submitted", confirmedRevision: revision })
-          .where(and(eq(applications.id, applicationId), eq(applications.revision, revision), eq(applications.status, "draft")))
-          .returning();
-        if (!row) throw new StaleConfirmation();
-
-        await tx.insert(applicationEvents).values({ applicationId, actorId: actor.id, eventType: "submitted", revision, details: {} });
-
-        return row;
+      // confirm 是"消费确认卡"类动作：不改 revision，只把 confirmed_revision 对齐到这次
+      // 确认时的 revision——revision 留给后续（比如老师 request-info/propose）继续往前走，
+      // 之后如果 revision 又变了但 confirmed_revision 没跟上，approve 那一步就知道"内容在
+      // 学员确认之后又变过，这个确认已经不代表最新状态了"（design.md 里"校验 revision 与
+      // confirmedRevision"这句话对应的就是这个机制，T-14 会真正用到）。
+      const updated = await claimConfirmationAndTransition(db, {
+        confirmationId: body.confirmationId,
+        applicationId,
+        expectedRevision: body.expectedRevision,
+        fromStatus: "draft",
+        set: { status: "submitted", confirmedRevision: body.expectedRevision },
+        actorId: actor.id,
+        eventType: "submitted",
       });
 
       if (idempotencyKey) await fulfillIdempotencyKey(db, actor.id, "confirmApplication", idempotencyKey, applicationId);
+      return c.json(toApplication(updated));
+    } catch (err) {
+      if (err instanceof StaleConfirmation) {
+        return errorJson(c, 409, "STALE_CONFIRMATION", "确认卡已失效，请查看最新摘要后重新确认");
+      }
+      throw err;
+    }
+  });
+
+  // POST /applications/:id/supplement —— 老师要求补充信息（needs_info）之后，学员补一段文字，
+  // 回到 submitted。补的内容不覆盖原始 reason，单独记一条审计事件，原因见 T-13 设计决定：
+  // reason 是"这次申请为什么提出"，补充说明是"回答老师的追问"，两者语义不同不能混在一个字段里。
+  app.post("/applications/:applicationId/supplement", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.text !== "string" || !body.text || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "text/expectedRevision 必填");
+    }
+
+    const [existing] = await db
+      .select({ status: applications.status })
+      .from(applications)
+      .where(and(eq(applications.id, applicationId), eq(applications.studentId, actor.id)));
+    if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+    if (existing.status !== "needs_info") return errorJson(c, 409, "INVALID_STATE", "只有老师要求补充信息时才能补充");
+
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(applications)
+        .set({ status: "submitted", revision: sql`${applications.revision} + 1` })
+        .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision), eq(applications.status, "needs_info")))
+        .returning();
+      if (!row) return null;
+      await tx.insert(applicationEvents).values({
+        applicationId,
+        actorId: actor.id,
+        eventType: "supplement",
+        revision: row.revision,
+        details: { text: body.text },
+      });
+      return row;
+    });
+    if (!updated) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
+    return c.json(toApplication(updated));
+  });
+
+  // POST /applications/:id/withdraw —— submitted/needs_info/awaiting_student_confirmation 都能撤，
+  // 批准后不能（AC-022：撤回之后老师再处理，靠 status/revision 不匹配拦住，不是额外加一个"已撤回"检查）。
+  app.post("/applications/:applicationId/withdraw", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (!body || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "expectedRevision 必填");
+    }
+
+    const [existing] = await db
+      .select({ status: applications.status })
+      .from(applications)
+      .where(and(eq(applications.id, applicationId), eq(applications.studentId, actor.id)));
+    if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+    if (!["submitted", "needs_info", "awaiting_student_confirmation"].includes(existing.status)) {
+      return errorJson(c, 409, "INVALID_STATE", "当前状态不能撤回");
+    }
+
+    const [updated] = await db
+      .update(applications)
+      .set({ status: "withdrawn", revision: sql`${applications.revision} + 1` })
+      .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision)))
+      .returning();
+    if (!updated) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
+
+    await revokeActiveConfirmation(db, applicationId);
+    await db.insert(applicationEvents).values({ applicationId, actorId: actor.id, eventType: "withdrawn", revision: updated.revision, details: {} });
+    return c.json(toApplication(updated));
+  });
+
+  // POST /applications/:id/proposal-response —— 学员对老师方案的回应。接受和拒绝都要消费同一张
+  // 确认卡（都是"针对这个方案做了一次明确决定"），区别只在转态之后的 set：接受不改 revision、
+  // 把 confirmed_revision 对齐（后续给 T-14 approve 用）；拒绝清空 proposal 并把 revision 往前推一格
+  // ——拒绝之后这个方案作废，谁都不该再基于旧 proposal 做任何事，这点必须体现在版本号上。
+  app.post("/applications/:applicationId/proposal-response", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.accept !== "boolean" || typeof body.confirmationId !== "string" || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "accept/confirmationId/expectedRevision 必填");
+    }
+
+    const [application] = await db
+      .select()
+      .from(applications)
+      .where(and(eq(applications.id, applicationId), eq(applications.studentId, actor.id)));
+    if (!application) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+    if (application.status !== "awaiting_student_confirmation") {
+      return errorJson(c, 409, "INVALID_STATE", "当前没有等待学员确认的方案");
+    }
+
+    try {
+      const updated = await claimConfirmationAndTransition(db, {
+        confirmationId: body.confirmationId,
+        applicationId,
+        expectedRevision: body.expectedRevision,
+        fromStatus: "awaiting_student_confirmation",
+        set: body.accept
+          ? { status: "submitted", confirmedRevision: body.expectedRevision }
+          : { status: "submitted", proposal: null, revision: sql`${applications.revision} + 1` },
+        actorId: actor.id,
+        eventType: body.accept ? "proposal_accepted" : "proposal_rejected",
+      });
       return c.json(toApplication(updated));
     } catch (err) {
       if (err instanceof StaleConfirmation) {
@@ -369,6 +521,143 @@ export function createApplicationRoutes(db: Db): Hono {
       .where(eq(applicationEvents.applicationId, applicationId))
       .orderBy(applicationEvents.createdAt);
     return c.json({ ...toApplication(row, active), events });
+  });
+
+  // GET /teacher/applications —— 老师的处理队列。任何老师都能看到全部申请（不是只看自己带的班），
+  // 和 T-10 已经定下的"老师角色不按班期分权限"一致；status/type 是可选过滤，不传就是全部。
+  app.get("/teacher/applications", async (c) => {
+    const limitParam = Number(c.req.query("limit") ?? 20);
+    const limit = Number.isInteger(limitParam) && limitParam > 0 && limitParam <= 100 ? limitParam : 20;
+    const cursorParam = c.req.query("cursor");
+    const cursor = cursorParam ? decodeCursor(cursorParam) : null;
+    if (cursorParam && !cursor) return errorJson(c, 422, "VALIDATION_ERROR", "cursor 格式不对");
+    const status = c.req.query("status");
+    const type = c.req.query("type");
+
+    const rows = await db
+      .select()
+      .from(applications)
+      .where(
+        and(
+          status ? eq(applications.status, status as ApplicationRow["status"]) : undefined,
+          type ? eq(applications.type, type as ApplicationRow["type"]) : undefined,
+          cursor ? sql`(${applications.createdAt}, ${applications.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id})` : undefined,
+        ),
+      )
+      .orderBy(desc(applications.createdAt), desc(applications.id))
+      .limit(limit);
+    const nextCursor = rows.length === limit ? encodeCursor(rows[rows.length - 1]!) : null;
+    return c.json({ items: rows.map((r) => toApplication(r)), nextCursor });
+  });
+
+  // POST /teacher/applications/:id/request-info —— 只能从 submitted 发起（design.md 状态机图上
+  // 只有这一条边），把问题记进审计事件，不是塞进 reason（reason 是学员自己写的原始理由）。
+  app.post("/teacher/applications/:applicationId/request-info", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.question !== "string" || !body.question || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "question/expectedRevision 必填");
+    }
+
+    const [existing] = await db.select({ status: applications.status }).from(applications).where(eq(applications.id, applicationId));
+    if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+    if (existing.status !== "submitted") return errorJson(c, 409, "INVALID_STATE", "只有待处理的申请可以要求补充信息");
+
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(applications)
+        .set({ status: "needs_info", revision: sql`${applications.revision} + 1` })
+        .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision), eq(applications.status, "submitted")))
+        .returning();
+      if (!row) return null;
+      await tx.insert(applicationEvents).values({
+        applicationId,
+        actorId: actor.id,
+        eventType: "request_info",
+        revision: row.revision,
+        details: { question: body.question },
+      });
+      return row;
+    });
+    if (!updated) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
+    return c.json(toApplication(updated));
+  });
+
+  // POST /teacher/applications/:id/propose —— 转班给目标班期或退费给 refundCents，二选一由
+  // application.type 决定；只能从 submitted 发起。方案写进 proposal，签给学员一张新确认卡
+  // （user_id 是学员本人，不是发起这次请求的老师——这张卡是学员要用来"确认/拒绝"的）。
+  app.post("/teacher/applications/:applicationId/propose", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.reason !== "string" || !body.reason || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "reason/expectedRevision 必填");
+    }
+
+    const [existing] = await db.select().from(applications).where(eq(applications.id, applicationId));
+    if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+    if (existing.status !== "submitted") return errorJson(c, 409, "INVALID_STATE", "只有待处理的申请可以提出方案");
+
+    let proposal: { targetCohortId?: string; refundCents?: number };
+    if (existing.type === "transfer") {
+      if (typeof body.targetCohortId !== "string") return errorJson(c, 422, "VALIDATION_ERROR", "转班方案必须给 targetCohortId");
+      const [cohort] = await db.select({ id: cohorts.id }).from(cohorts).where(eq(cohorts.id, body.targetCohortId));
+      if (!cohort) return errorJson(c, 404, "NOT_FOUND", "目标班期不存在");
+      proposal = { targetCohortId: body.targetCohortId };
+    } else {
+      if (!Number.isInteger(body.refundCents) || body.refundCents < 0) return errorJson(c, 422, "VALIDATION_ERROR", "退费方案必须给非负整数 refundCents");
+      proposal = { refundCents: body.refundCents };
+    }
+
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(applications)
+        .set({ status: "awaiting_student_confirmation", proposal, revision: sql`${applications.revision} + 1` })
+        .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision), eq(applications.status, "submitted")))
+        .returning();
+      if (!row) return null;
+      await tx.insert(applicationEvents).values({
+        applicationId,
+        actorId: actor.id,
+        eventType: "proposed",
+        revision: row.revision,
+        details: { reason: body.reason, proposal },
+      });
+      return row;
+    });
+    if (!updated) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
+
+    const confirmation = await issueConfirmation(db, existing.studentId, updated);
+    return c.json({ ...toApplication(updated, confirmation) });
+  });
+
+  // POST /teacher/applications/:id/reject —— 终态拒绝整张申请（不是拒绝某个方案，那是
+  // proposal-response）。允许范围和 withdraw 对称：批准之前的任何非终态都能被老师拒绝。
+  app.post("/teacher/applications/:applicationId/reject", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.reason !== "string" || !body.reason || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "reason/expectedRevision 必填");
+    }
+
+    const [existing] = await db.select({ status: applications.status }).from(applications).where(eq(applications.id, applicationId));
+    if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+    if (!["submitted", "needs_info", "awaiting_student_confirmation"].includes(existing.status)) {
+      return errorJson(c, 409, "INVALID_STATE", "当前状态不能拒绝");
+    }
+
+    const [updated] = await db
+      .update(applications)
+      .set({ status: "rejected", revision: sql`${applications.revision} + 1` })
+      .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision)))
+      .returning();
+    if (!updated) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
+
+    await revokeActiveConfirmation(db, applicationId);
+    await db.insert(applicationEvents).values({ applicationId, actorId: actor.id, eventType: "rejected", revision: updated.revision, details: { reason: body.reason } });
+    return c.json(toApplication(updated));
   });
 
   return app;

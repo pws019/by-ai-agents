@@ -1,6 +1,6 @@
 # 进度记录
 
-更新：2026-09-23。M1（业务事实与身份，T-06～T-11）全部完成。M2（申请闭环，先不用模型）进行中：T-12 已完成，验收证据见下表。当前任务：**T-13（补充/撤回/老师提方案/学员接受拒绝）**。
+更新：2026-09-23。M1（业务事实与身份，T-06～T-11）全部完成。M2（申请闭环，先不用模型）进行中：T-12、T-13 已完成，验收证据见下表。当前任务：**T-14（老师批准转班事务）**。
 
 ## 1. 任务状态与验证证据
 
@@ -18,6 +18,7 @@
 | T-10 老师维护/导入 API | 完成 | 先补 `contracts/education/openapi.yaml`（6 端点 + 8 schema，`redocly lint` 0 error、`validate.mjs` 全 PASS），再实现 `education-api/src/routes/teacher.ts`。`npm test --workspace=education-api`：52 passed（含角色权限、courseVersion 归属校验、cohort/lesson 唯一约束冲突转 422、手工报名生成 `source=manual` 订单、进度导入部分成功）。反向验证：临时去掉 `requireRole("teacher")` → 学员访问 403 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`teacher.alice` 能创建课次、`student.chen` 同样请求 403；批量导入进度时未报名的学员被拒绝、已报名的正常写入且 `source` 正确记为 `import`。测试产生的数据（临时课次、被改动的进度状态）已用 `npm run seed` 和手工 DELETE 清理，dev 库行数与 T-07 文档一致（users=5/orders=3/enrollments=3/lessons=8） |
 | T-11 前端登录/角色路由/我的学习页 | 完成 | `customer-frontend/src/education/`（api.ts、AuthContext.tsx、RequireAuth.tsx、LoginPage.tsx、MyLearningPage.tsx、TeacherPlaceholderPage.tsx、EducationLayout.tsx）+ `vite.config.ts` 加 `/api` → 8400 的开发代理（浏览器视角同源，cookie 自动带，不用搭 CORS）+ `router.tsx` 新增 `/login`、`/my-learning`、`/teacher` 三条路由，legacy 聊天路由树原样保留。`tsc -b --noEmit` 通过。真实浏览器（chrome-devtools MCP）端到端验证：`student.chen` 登录后 `/my-learning` 显示的班期名、课次、进度状态与 T-07 种子数据逐字段一致；硬刷新后登录状态不丢（cookie-based）；退出登录后 `RequireAuth` 响应式跳回 `/login`（不是只在首次加载判断一次）；直接访问 `/my-learning` 不带 session 会被拦到 `/login`；legacy `/` 路由渲染不受影响（原有"mastra dev 未启动"的错误提示照常出现，证明改动没有波及 legacy 代码路径）。**测试中发现并修复一个真实 bug**：登录成功后的跳转原本写死 `/my-learning`，老师账号登录会先跳错页面再被 `RequireAuth` 拦下显示"无权限"，不是真的角色路由；改成 `AuthContext.login()` 返回 `CurrentUser`，由 `LoginPage` 按 `role` 决定目的地，修复后用真实老师账号重新登录验证过。未做自动化前端测试（customer-frontend 目前没有测试框架），验证手段是浏览器手动走查，记为已知覆盖缺口 |
 | T-12 申请草稿/摘要/版本/确认 API | 完成 | `education-api/src/routes/applications.ts`（drafts 创建/编辑/列表/详情/确认）+ `education-api/src/idempotency.ts`（通用幂等键声明/回填，供 confirm 及后续 T-13～15 复用）。`npm test --workspace=education-api`：67 passed。覆盖：AC-007（目标班期未知可创建）、AC-006（同 enrollment/type 重复创建草稿返回同一 id）、草稿已过 draft 阶段时重复创建返回 409、PATCH 草稿的 `expectedRevision` 原子校验、旧确认卡编辑后被撤销、`GET /applications/:id` 对非本人非老师一律 404、confirm 正常路径写入 submitted 审计事件、同一确认卡重复调用幂等重放、AC-005 陈旧确认卡 409、Idempotency-Key 头重试不重复执行、真并发（`Promise.all` 两个请求抢同一张确认卡）只成功一次。反向验证：分别临时去掉 `confirmations.used_at IS NULL` 守卫和 `applications.status='draft'` 守卫，发现两者是独立的双重保护——单独去掉任一个，并发测试仍然通过，说明这两条 WHERE 条件互为兜底，不是其中一条冗余；均恢复后全绿。confirm 的核心实现：`confirmations` 的"未使用"判断与"标记已用"合并进同一条 `UPDATE ... RETURNING`，`applications` 的 revision/status 判断同样写进 `UPDATE` 的 WHERE，两条 UPDATE 包在一个显式事务里，第二条失败时 `ROLLBACK` 连带撤销第一条已经 claim 的确认卡。真实开发服务器 + `student.li` 种子账号验证过创建草稿、确认、重复确认幂等回放；因为 `application_events` 是追加式表（按设计不可删除），这条测试留下的 `submitted` 申请记录永久留在 dev 库，属已知情况，不是清理遗漏。**范围调整**：`confirm` 的并发控制原计划由学员手写（已给骨架+失败测试），学员表示这部分业务场景较复杂、学习重心在 M3 agent 部分，改由我直接实现完成；已记入全局 memory，M2 剩余任务（T-13～T-17）默认不再假设"核心机制必须手写"，视学员意愿而定 |
+| T-13 补充/撤回/老师提方案/学员接受拒绝 | 完成 | `education-api/src/routes/applications.ts` 新增 `POST /applications/:id/supplement`、`POST /applications/:id/withdraw`、`POST /applications/:id/proposal-response`、`GET /teacher/applications`、`POST /teacher/applications/:id/{request-info,propose,reject}`；抽出共享事务 helper `claimConfirmationAndTransition`（confirm 与 proposal-response 共用）和 `revokeActiveConfirmation`（PATCH draft/withdraw/reject 共用）。`npm test --workspace=education-api`：applications.test.ts 单独跑 27 passed（含 T-12 原有 15 个）；全量跑因为并行测试库之间偶发 "terminating connection due to administrator command"（T-06 起就有的已知基础设施抖动，与本轮改动无关，见下方复现记录）时有 1 个不相关文件失败，applications.test.ts 本身连续多次单独运行全绿。覆盖：非 needs_info 补充 409、补充后 revision+2（needs_info 一次+supplement 一次）、withdraw 允许的三种状态、**AC-022**（撤回后用旧 revision 再操作返回 409 且报名状态未变）、已批准不能撤回、propose 非 submitted 状态 409、转班方案缺 targetCohortId 422、propose→accept 全流程（摘要正确反映方案里的目标班期而非草稿原值、accept 不改 revision、旧卡不能重放）、**拒绝方案**回 submitted 且 proposal 清空、revision+1、executionStatus 仍是 not_started（不自动执行）、教师队列按 status 过滤、reject 撤销未消费的确认卡。真实开发服务器验证过完整 propose→accept 链路（`teacher.alice` 提方案，`student.wang` 接受，摘要/最终状态与预期一致）；测试产生的 `submitted` 申请因追加式审计表限制无法清理，与 T-12 已知情况相同 |
 
 ## 2. T-01 基线盘点
 
@@ -126,6 +127,18 @@
 | confirm 端点的事务从手写 `BEGIN`/`COMMIT`/`ROLLBACK` 改成 `db.transaction(async tx => {...})`，用抛自定义错误类（`StaleConfirmation`）代替手动判断后调 `ROLLBACK` | drizzle 的事务包装器在回调抛错时自动回滚，不用每个失败分支都记得手动调用 `ROLLBACK`——手写版本能做对，但每加一个失败分支就多一处"记得回滚"的心智负担，用异常代替显式调用是把这个责任交给语言机制而不是靠人记住 |
 
 验证：`npx tsc -b --noEmit` 全工作区通过；`npm test --workspace=education-api` 67 passed（含原有全部反向验证用例）。反向验证：临时去掉 `PATCH .../draft` 里的 `eq(applications.studentId, actor.id)` 过滤，"不是本人的申请：404" 用例按预期变红，恢复后全绿——证明转换后授权判断的语义没有跟着变松。真实开发服务器（drizzle 版）+ 种子账号验证过登录、`/me/enrollments`、`/catalog/current`、创建并确认一张新申请（`db.transaction` 事务路径）、老师批量导入的部分拒绝逻辑；`Promise.all` 真并发确认测试连续跑 5 次稳定通过，确认切到 `db.transaction` 没有削弱原来的并发保护。测试产生的 `submitted` 申请因为 `application_events` 追加式表限制无法清理，与 T-12 时已知的情况相同。
+
+### T-13 设计决定
+| 决定 | 理由 |
+|---|---|
+| revision 分两类：不经过确认卡的状态变更（supplement/withdraw/request-info/propose/proposal-response 的拒绝分支/reject）一律 `revision+1`；消费确认卡的动作（confirm、proposal-response 的接受分支）不改 revision，只把 `confirmed_revision` 对齐到当前 revision | design.md"锁申请/报名 → 校验 revision 与 confirmedRevision"这句话要求两者能表达"内容有没有在确认之后又变过"；如果消费确认卡的动作也顺手 bump revision，`confirmed_revision` 会立刻等于新 revision，永远追不上，这个校验就失去意义了 |
+| `confirm` 与 `proposal-response` 共用同一个事务 helper `claimConfirmationAndTransition`（claim 确认卡 + 转申请状态 + 写审计事件，一次都不行就整体回滚） | 两者是同一个模式（消费确认卡 → 转态），T-12 时已经写过一遍手写事务，T-13 只是换了状态和字段，把公共部分抽出来而不是复制一份几乎一样的事务代码 |
+| `proposal-response` 不做 confirm 那种"同一张卡重复调用当幂等重放"的豁免，也不接 Idempotency-Key | 契约里 `proposal-response` 本来就没有 `Idempotency-Key` 参数；重复调用直接落到"确认卡已用" 409，调用方（前端）行为应该是先重新 GET 最新状态，不是静默重试——没有具体 AC 要求这里也做重放豁免，不为了对称而对称 |
+| `propose` 签发的新确认卡，`user_id` 记的是学员（`application.studentId`），不是发起请求的老师 | `confirmations.user_id` 只是审计字段（真正的权限判断在 applications 行的 `student_id`），但语义上这张卡是签给"要做决定的人"，老师只是触发了签发动作，混淆了以后审计时会让人误以为是老师自己在确认自己提的方案 |
+| `summaryOf` 的 `targetCohortId` 优先取 `proposal.targetCohortId`，草稿原始的 `target_cohort_id` 只在没有方案时兜底 | propose 之后学员看到的确认卡摘要必须是"老师这次提议的目标"，不是学员当初创建草稿时的旧值（大多数场景下就是 null，因为 AC-007 本来就允许创建时不知道目标）——两个字段各显示各的会让确认卡文不对题 |
+| `POST /teacher/applications/:id/reject`（终态拒绝整张申请）划进 T-13，不留到 T-14/15 | reject 没有执行副作用（不涉及转班事务或退款登记），跟 supplement/withdraw 这类"纯状态转换"是同一类复杂度；T-14/15 留给真正需要事务+权益变更的 approve/refund-result，任务边界按"要不要执行动作"分更清楚，不是按契约里端点出现的先后顺序生搬硬套 |
+
+### T-09 设计决定
 | 决定 | 理由 |
 |---|---|
 | `/catalog/current` 用 `is_current_sale = true ORDER BY start_at LIMIT 1` 选一条 | DB 的唯一索引是"每门课程最多一个当期在售班期"，不是全局唯一；系统里理论上可以有多门课程各自在售。契约没给筛选课程的参数，MVP 阶段只展示一个"当期"，取最早开课的一条；等有多课程并行招生的真实需求时再加课程维度的参数，不提前设计 |
