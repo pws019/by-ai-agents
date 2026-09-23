@@ -13,6 +13,7 @@
 | T-06 数据库迁移 | 完成 | `npm test --workspace=education-api`：16 passed（新建临时库→迁移→再次迁移无变化→篡改已执行迁移被拒；13 条约束用例断言了具体错误码）。反向验证：临时移除金额 CHECK、部分唯一索引、审计触发器后恰好 3 个对应用例失败，恢复后全绿。真实开发库 `npm run migrate --workspace=education-api` 首次执行 5 个迁移，再次执行「没有待执行的迁移」；17 张表全在 `app` schema，`public` 为 0 |
 | T-05 workspace 脚本 | 完成 | `turbo run dev --dry=json`：`--filter=education-agent` 只含 `education-agent#dev`；`--filter=!education-agent` 含 6 个 legacy 任务、不含 education-agent。实测默认 `npm run dev`：8300 返回 200，旧服务端口 4111/5173/8123/8200/6333/8100 均无监听；停止后 8300 释放。`npm run test:education` 5 passed，`npm run contracts:check` 通过。package-lock 仅新增 education-agent 工作区条目（+9 行） |
 | T-07 合成 seed | 完成 | `data/education/seed/seed-data.json`（5 users、1 policy、2 courses、3 course_versions、4 cohorts、8 lessons、3 orders、3 enrollments、6 learning_progress，id 固定为 `00000000-…-0000000000xx`，姓名/课程名均带"（合成数据）"后缀，`orders.source='seed'`）。`npm run seed --workspace=education-api` 幂等写入真实开发库；重复执行后 `select count(*) from app.users`/`app.orders` 行数不变（5/3），验证未产生重复行。覆盖：历史/当前/预告三种班期状态、同课程两个版本、全款与部分退款订单、三种学习进度状态 |
+| T-08 登录/session/资源授权（内部服务认证延后见下） | 完成（本轮范围） | `education-api/src/auth/`（password.ts、session.ts、middleware.ts）+ `src/routes/auth.ts`、`src/routes/me.ts` + `src/app.ts`。`npm test --workspace=education-api`：28 passed，含 password 哈希、登录/会话集成测试、`GET /me/enrollments/:id/progress` 资源级授权（真实临时库 + `app.request()`，非 mock）。反向验证：临时去掉 `/me` 的 `requireAuth` → 从 401 变 500；临时注掉 CSRF 中间件 → 从 403 变 200；临时去掉 progress 查询里的 `student_id` 过滤 → 4 个用例**仍然全绿**（测试夹具里学员各自独立班期，没有共享课次，这个漏洞不在当前用例覆盖范围内，靠代码审查而非测试发现）；均恢复后全绿。真实开发服务器实测（`npm start` 起 8400，真实 T-07 种子账号 `student.chen`）：登录 200 并 Set-Cookie、`/me` 200、无 cookie 401、logout 204 后旧 cookie 401。L-01 资源授权练习由学员手写实现（先给失败测试+骨架+TODO，学员实现，经 3 轮 review：条件取反、SQL 语法错误/表名错误/缺 `student_id` 过滤、箭头函数对象字面量少括号、`any` 换成精确类型，含一处 boolean/string 类型标注错误）。**未开始**：BFF→agent 内部身份签发与校验——当前没有 agent 侧消费方，留到 M3 agent 真正需要调用这些 API 时再实现，避免为不存在的调用方设计协议 |
 
 ## 2. T-01 基线盘点
 
@@ -62,6 +63,7 @@
 - Neo4j 镜像把所有 `NEO4J_*` 环境变量当配置解析；给容器加 `NEO4J_PASSWORD` 会因未知设置启动失败。healthcheck 需要的密码用非 `NEO4J_` 前缀名。
 - 第一次"重启验证"因 zsh 未拆词 `$C` 命令根本没执行；读回数据不构成证据，已用容器 StartedAt 变化重做。教训：验证要有"发生过"的证据。
 - `lsof` 显示 5433 由 `ssh` 监听是 Colima 端口转发，非冲突。
+- （T-08）宿主机休眠导致 Colima 的 VZ 虚拟机崩溃、host agent 异常退出留下过期 `vz.pid`，之后 `colima start` 报 `vz driver is running but host agent is not`。修复：删掉过期的 `~/.colima/_lima/colima/vz.pid` 后重新 `colima start`。VM 磁盘（`_lima/_disks/`）没有被清理，数据没丢（`npm run edu:infra` 拉起容器后 users/orders 行数与 T-07 种子一致）。教训：这类基础设施故障要先查磁盘文件是否还在，再决定要不要用破坏性的 `colima delete` 重建。
 
 ### T-06 设计决定
 | 决定 | 理由 |
@@ -86,6 +88,16 @@
 | 时间字段用相对"现在"的 `daysOffset` 而非写死时间戳 | 历史/当前/预告三种班期状态的时间关系（过去/最近/未来）不会随日期推移过期失真 |
 | 密码哈希用 Node 内置 `scrypt`（`education-api/src/auth/password.ts`），未引入 bcrypt/argon2 依赖 | dev-only 数据，免依赖；格式 `scrypt:salt:hash` 自包含，T-08 登录校验直接复用同一模块，生产前需重新评估 cost 参数 |
 | 所有合成账号共用一个明文开发密码 `edu-dev-pass-001`（写在 README，不是每人随机密码） | 开发/教学场景要能登录测试；生产环境不会有共享密码，已在 README 注明 |
+
+### T-08 设计决定（登录/session 部分，资源授权与内部服务认证待学员手写）
+| 决定 | 理由 |
+|---|---|
+| session token 用 sha256 哈希落库，密码用 scrypt | token 本身是 32 字节随机数，猜不出来，不需要故意拖慢；密码是人选的、熵不够，需要慢哈希抗暴力破解。两种哈希解决的是不同威胁，混用同一算法要么密码不够慢、要么 token 校验不必要地慢 |
+| 用户不存在与密码错误返回同一个 401/同一条消息 | 分开返回等于让攻击者能批量探测哪些登录名已注册（用户名枚举） |
+| session cookie：HttpOnly + SameSite=Lax + 生产环境 Secure；写请求额外校验 Origin/Referer（`requireSameOrigin`） | HttpOnly 挡 XSS 偷 token，SameSite=Lax 挡多数跨站请求，但 cookie 仍会被浏览器自动带上——真正挡 CSRF 的是校验请求发起站点；GET/HEAD 不改状态不查 |
+| `withActor` 中间件只解析身份、不做 401；`requireAuth`/`requireRole` 单独挂在需要的路由前 | 同一套身份解析要同时服务"允许匿名"（登录、公开招生信息）和"必须登录"的路由，401 的判断权应该留给具体路由，不能在全局中间件里一刀切 |
+| 端口 8400，前缀 `/api/v1`（沿用契约 `servers`） | 8200/8300 已被 legacy/agent 占用；前缀与 openapi.yaml 保持一致，不是另起一套 |
+| 资源级授权（某条记录是否属于当前 actor）、BFF→agent 内部身份签发与验签，本轮未实现 | design.md §3 要求的核心机制（不能信任浏览器提交的 actor、内部 token 不进模型提示词），属于本项目分层约定里"必须亲手写一遍"的部分；且当前没有具体资源路由（T-09 才有），先留一个明确边界比提前臆造接口更诚实 |
 
 ### T-05 设计决定
 | 决定 | 理由 |
