@@ -137,6 +137,7 @@
 | approve 的原子 UPDATE 一次性在 WHERE 里判断三件事：revision、confirmed_revision、status 都要对得上 | 这是 AC-008 的核心：revision 防"两个老师并发批准，只有一个赢"；confirmed_revision 防"内容在学员最近一次确认之后又被别的动作改过，老师批的可能不是学员真正同意的版本"（T-13 定下的水位线机制在这里第一次被真正用到）；status 防"申请已经不是 submitted 了还被批准"。三者都写进同一条 UPDATE 的 WHERE，一次原子判断，不是分成三次先查后比对 |
 | 转班目标解析用 `proposal?.targetCohortId ?? existing.targetCohortId`；两者都没有就 409，不是允许"老师随便挑一个" | 沿用 T-13 定下的兜底链：目标要么学员建草稿时就知道，要么老师 propose 之后学员 accept 过；approve 端点本身不接收 targetCohortId 参数（契约里没有），如果两边都没有目标，说明流程没走完，不该由 approve 这一步临时决定转去哪 |
 | `oldReplayAccess=keep` 时插入的 `replay_entitlements` 行没有设置 `revokedAt`（保持 NULL，即长期有效） | 这是"保留旧班期回放权益"的字面意思——插入即生效，没有到期时间；`revoke` 时干脆不插入这条记录，效果上就是"没有权益"，不需要插入一条又标记撤销的记录再撤销一次，多此一举 |
+| 新增迁移 `0006_enrollment_changes_append_only.sql`，给 `enrollment_changes` 补上和 `application_events` 一样的 `forbid_change()` 追加式触发器（之前只是代码约定，没有数据库硬约束） | 学员追问"数据库设计什么时候该改源数据、什么时候该配日志、什么时候该插新行"时发现的不一致：`enrollment_changes` 记录的是和 `application_events` 同一类"不可逆业务事实"，之前却没有数据库层面的强制，只是"代码里从来不写 UPDATE/DELETE"这种约定；补上同一个触发器成本很低（复用已有函数），把两张性质相同的审计表统一到同一个保护级别，不再有一个硬一个软的不一致。真实开发库执行迁移后验证：对已有的一条 `enrollment_changes` 记录尝试 `UPDATE`，报 `enrollment_changes 是追加式表，不允许 UPDATE`；`npm run migrate` 再次执行显示"没有待执行的迁移"（幂等）；`npm test --workspace=education-api` 86 passed |
 
 ### T-13 设计决定
 | 决定 | 理由 |
