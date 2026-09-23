@@ -7,7 +7,7 @@ import { createApp } from "../app.js";
 import { createSession } from "../auth/session.js";
 import { DATABASE_URL } from "../db/config.js";
 import { migrate } from "../db/migrate.js";
-import { createPool } from "../db/pool.js";
+import { createDb, createPool } from "../db/pool.js";
 
 const migrationsDir = fileURLToPath(new URL("../db/migrations", import.meta.url));
 const dbName = `edu_test_${randomBytes(4).toString("hex")}`;
@@ -21,6 +21,7 @@ const ORIGIN = "http://localhost:5173";
 
 let admin: pg.Client;
 let pool: pg.Pool;
+let db: ReturnType<typeof createDb>;
 let app: ReturnType<typeof createApp>;
 
 const q = <T extends pg.QueryResultRow = pg.QueryResultRow>(sql: string, params: unknown[] = []) => pool.query<T>(sql, params);
@@ -41,6 +42,7 @@ before(async () => {
   await admin.query(`CREATE DATABASE ${dbName}`);
   await migrate(testUrl, migrationsDir);
   pool = createPool(testUrl);
+  db = createDb(pool);
   app = createApp(pool, { allowedOrigin: ORIGIN });
 
   studentAId = await id(
@@ -49,8 +51,8 @@ before(async () => {
   const studentBId = await id(
     "INSERT INTO users (login_name, password_hash, display_name, role) VALUES ('b','x','B','student') RETURNING id",
   );
-  studentACookie = `edu_session=${(await createSession(pool, studentAId)).token}`;
-  studentBCookie = `edu_session=${(await createSession(pool, studentBId)).token}`;
+  studentACookie = `edu_session=${(await createSession(db, studentAId)).token}`;
+  studentBCookie = `edu_session=${(await createSession(db, studentBId)).token}`;
 
   const courseId = await id("INSERT INTO courses (title) VALUES ('课程') RETURNING id");
   const versionId = await id("INSERT INTO course_versions (course_id, version) VALUES ($1,1) RETURNING id", [courseId]);

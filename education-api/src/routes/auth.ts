@@ -1,20 +1,15 @@
 // POST /auth/login、POST /auth/logout、GET /me —— 契约见 contracts/education/openapi.yaml。
 import { Hono } from "hono";
-import type pg from "pg";
-import { verifyPassword } from "../auth/password.js";
-import { clearSessionCookie, requireAuth, setSessionCookie, SESSION_COOKIE } from "../auth/middleware.js";
-import { createSession, revokeSession } from "../auth/session.js";
-import { errorJson } from "../http/errors.js";
 import { getCookie } from "hono/cookie";
+import { sql } from "drizzle-orm";
+import { clearSessionCookie, requireAuth, setSessionCookie, SESSION_COOKIE } from "../auth/middleware.js";
+import { verifyPassword } from "../auth/password.js";
+import { createSession, revokeSession } from "../auth/session.js";
+import type { Db } from "../db/pool.js";
+import { users } from "../db/schema.js";
+import { errorJson } from "../http/errors.js";
 
-interface UserRow {
-  id: string;
-  login_name: string;
-  password_hash: string;
-  role: "student" | "teacher";
-}
-
-export function createAuthRoutes(pool: pg.Pool): Hono {
+export function createAuthRoutes(db: Db): Hono {
   const app = new Hono();
 
   app.post("/auth/login", async (c) => {
@@ -23,25 +18,25 @@ export function createAuthRoutes(pool: pg.Pool): Hono {
       return errorJson(c, 422, "VALIDATION_ERROR", "loginName/password 必填");
     }
 
-    const { rows } = await pool.query<UserRow>(
-      "SELECT id, login_name, password_hash, role FROM users WHERE lower(login_name) = lower($1)",
-      [body.loginName],
-    );
-    const user = rows[0];
+    // 登录名不区分大小写唯一（迁移里的 lower(login_name) 索引），查询按同样的规则比较。
+    const [user] = await db
+      .select({ id: users.id, loginName: users.loginName, passwordHash: users.passwordHash, role: users.role })
+      .from(users)
+      .where(sql`lower(${users.loginName}) = lower(${body.loginName})`);
     // 用户不存在和密码错误返回同一个 401——分开返回等于告诉攻击者"这个用户名存在"，
     // 变相支持批量探测哪些登录名已注册（用户名枚举）。
-    if (!user || !verifyPassword(body.password, user.password_hash)) {
+    if (!user || !verifyPassword(body.password, user.passwordHash)) {
       return errorJson(c, 401, "UNAUTHORIZED", "登录名或密码错误");
     }
 
-    const { token, expiresAt } = await createSession(pool, user.id);
+    const { token, expiresAt } = await createSession(db, user.id);
     setSessionCookie(c, token, expiresAt);
-    return c.json({ id: user.id, loginName: user.login_name, role: user.role });
+    return c.json({ id: user.id, loginName: user.loginName, role: user.role });
   });
 
   app.post("/auth/logout", async (c) => {
     const token = getCookie(c, SESSION_COOKIE);
-    if (token) await revokeSession(pool, token);
+    if (token) await revokeSession(db, token);
     clearSessionCookie(c);
     return c.body(null, 204);
   });

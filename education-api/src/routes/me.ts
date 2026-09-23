@@ -1,8 +1,10 @@
 // GET /me/enrollments/:enrollmentId/progress —— 规格见 me.test.ts。
 // 授权判断的核心：enrollments 查询把 student_id 放进 WHERE，不存在和不是本人的都归一为 404。
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import type pg from "pg";
 import { requireAuth } from "../auth/middleware.js";
+import type { Db } from "../db/pool.js";
+import { cohorts, enrollments, learningProgress, lessons, orders, policies } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 
 // 导出给 teacher.ts 复用：手工登记报名之后返回的形状要和这里的 Enrollment 一致。
@@ -10,96 +12,99 @@ export interface EnrollmentRow {
   id: string;
   status: string;
   revision: number;
-  cohort_id: string;
+  cohortId: string;
   name: string;
-  start_at: Date | null;
-  policy_version: number;
+  startAt: Date | null;
+  policyVersion: number;
 }
 
 export function toEnrollment(row: EnrollmentRow) {
   return {
     enrollmentId: row.id,
-    cohort: { cohortId: row.cohort_id, name: row.name, startAt: row.start_at },
+    cohort: { cohortId: row.cohortId, name: row.name, startAt: row.startAt },
     status: row.status,
     // rights 契约字段描述和 policyVersion 重复、语义不明确（不是这个系统当前有数据来源的东西），
     // 不编造内容，固定返回空数组；见 progress.md T-09 设计决定。
     rights: [] as string[],
-    policyVersion: row.policy_version,
+    policyVersion: row.policyVersion,
     revision: row.revision,
   };
 }
 
-export function createMeRoutes(pool: pg.Pool): Hono {
+export function createMeRoutes(db: Db): Hono {
   const app = new Hono();
 
   app.get("/me/enrollments", requireAuth, async (c) => {
     const actor = c.get("actor")!;
-    const { rows } = await pool.query<EnrollmentRow>(
-      `SELECT e.id, e.status, e.revision, c.id AS cohort_id, c.name, c.start_at, p.version AS policy_version
-       FROM enrollments e
-       JOIN cohorts c ON c.id = e.cohort_id
-       JOIN orders o ON o.id = e.order_id
-       JOIN policies p ON p.id = o.policy_id
-       WHERE e.student_id = $1
-       ORDER BY e.created_at DESC`,
-      [actor.id],
-    );
+    const rows = await db
+      .select({
+        id: enrollments.id,
+        status: enrollments.status,
+        revision: enrollments.revision,
+        cohortId: cohorts.id,
+        name: cohorts.name,
+        startAt: cohorts.startAt,
+        policyVersion: policies.version,
+      })
+      .from(enrollments)
+      .innerJoin(cohorts, eq(cohorts.id, enrollments.cohortId))
+      .innerJoin(orders, eq(orders.id, enrollments.orderId))
+      .innerJoin(policies, eq(policies.id, orders.policyId))
+      .where(eq(enrollments.studentId, actor.id))
+      .orderBy(desc(enrollments.createdAt));
     return c.json({ items: rows.map(toEnrollment) });
   });
 
   app.get("/me/enrollments/:enrollmentId/progress", requireAuth, async (c) => {
     const actor = c.get("actor")!;
-    const enrollmentId = c.req.param("enrollmentId");
+    const enrollmentId = c.req.param("enrollmentId")!;
 
     // 找到报名信息
-    const { rows } = await pool.query<{id: string, student_id: string, cohort_id: string}>(
-      "SELECT id, student_id, cohort_id FROM enrollments WHERE id = $1 and student_id = $2",
-      [enrollmentId, actor.id],
-    );
+    const [enrollment] = await db
+      .select({ id: enrollments.id, studentId: enrollments.studentId, cohortId: enrollments.cohortId })
+      .from(enrollments)
+      .where(and(eq(enrollments.id, enrollmentId), eq(enrollments.studentId, actor.id)));
 
-    const enrollment = rows[0];
-    if(!enrollment) {
+    if (!enrollment) {
       return errorJson(c, 404, "NOT_FOUND", "未找到报名");
     }
-    const cohortId = enrollment.cohort_id;
-
+    const cohortId = enrollment.cohortId;
 
     // 查找对应的课程id
-    const { rows: lessonRows } = await pool.query<{id: string}>(
-      "SELECT id FROM lessons WHERE cohort_id = $1",
-      [cohortId],
-    );
+    const lessonRows = await db.select({ id: lessons.id }).from(lessons).where(eq(lessons.cohortId, cohortId));
 
-    const lessonIds = lessonRows.map(v => v.id);
+    const lessonIds = lessonRows.map((v) => v.id);
 
     // 找到对应的学习记录信息
-    const { rows: learningProcess } = await pool.query<{lesson_id: string, status: "not_started" | "in_progress" | "completed", source: string}>(
-      "SELECT student_id, id, lesson_id, status, source FROM learning_progress WHERE lesson_id = ANY($1) and student_id = $2",
-      [lessonIds, actor.id],
-    )
+    const learningProcess = lessonIds.length
+      ? await db
+          .select({ lessonId: learningProgress.lessonId, status: learningProgress.status, source: learningProgress.source })
+          .from(learningProgress)
+          .where(and(inArray(learningProgress.lessonId, lessonIds), eq(learningProgress.studentId, actor.id)))
+      : [];
 
-    const items = learningProcess.map(v => ({lessonId: v.lesson_id, status: v.status, source: v.source}));
+    const items = learningProcess.map((v) => ({ lessonId: v.lessonId, status: v.status, source: v.source }));
 
-    return c.json({items});
+    return c.json({ items });
   });
 
   app.get("/me/enrollments/:enrollmentId/schedule", requireAuth, async (c) => {
     const actor = c.get("actor")!;
-    const enrollmentId = c.req.param("enrollmentId");
+    const enrollmentId = c.req.param("enrollmentId")!;
 
-    const { rows } = await pool.query<{ cohort_id: string }>(
-      "SELECT cohort_id FROM enrollments WHERE id = $1 AND student_id = $2",
-      [enrollmentId, actor.id],
-    );
-    const enrollment = rows[0];
+    const [enrollment] = await db
+      .select({ cohortId: enrollments.cohortId })
+      .from(enrollments)
+      .where(and(eq(enrollments.id, enrollmentId), eq(enrollments.studentId, actor.id)));
     if (!enrollment) return errorJson(c, 404, "NOT_FOUND", "未找到报名");
 
-    const { rows: lessons } = await pool.query<{ id: string; title: string; position: number; replay_asset_key: string | null }>(
-      "SELECT id, title, position, replay_asset_key FROM lessons WHERE cohort_id = $1 ORDER BY position",
-      [enrollment.cohort_id],
-    );
+    const items = await db
+      .select({ id: lessons.id, title: lessons.title, position: lessons.position, replayAssetKey: lessons.replayAssetKey })
+      .from(lessons)
+      .where(eq(lessons.cohortId, enrollment.cohortId))
+      .orderBy(lessons.position);
     return c.json({
-      items: lessons.map((l) => ({ lessonId: l.id, title: l.title, order: l.position, hasReplay: l.replay_asset_key !== null })),
+      items: items.map((l) => ({ lessonId: l.id, title: l.title, order: l.position, hasReplay: l.replayAssetKey !== null })),
     });
   });
 

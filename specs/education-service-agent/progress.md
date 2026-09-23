@@ -113,6 +113,19 @@
 | 幂等键基础设施（`idempotency.ts`）单独抽出、本轮先写好但只接进 confirm 一个端点 | `Idempotency-Key` 在契约里同时出现在 drafts/confirm/approve/refund-result 四个端点上，是同一套机制；写成通用两函数（声明/回填）而不是在每个 handler 里各写一遍，T-13～15 直接复用，不用重新设计 |
 | confirm 里两条 UPDATE（claim confirmations、转 applications 为 submitted）包进显式事务，第二条失败就 ROLLBACK，而不是各自独立提交 | 如果各自独立提交，confirmations 的 claim 成功但 applications 的 UPDATE 因为 revision/status 不符而失败时，确认卡已经被标记用过、但申请状态什么都没变——一张烧掉却没有效果的确认卡，学员卡在原地还看不出原因。ROLLBACK 能把这次事务里所有已完成的写操作一起撤销，不只是最后一条 |
 | Idempotency-Key 重放时，只有该 key 之前的尝试留下了 `result_id`（证明真的成功过）才直接回读结果；`result_id` 为空一律当成"没成功过"，重新走一遍正常逻辑 | 如果不做这个区分，一次因为确认卡过期而失败的请求，配合客户端用同一个 key 重试，会被误判为"之前成功了"，把一次真实失败悄悄伪装成成功——幂等键要防的是"重复执行"，不能反而用来掩盖失败 |
+
+### T-12 后补充：整体切换到 Drizzle ORM（学员要求，非独立任务编号）
+学员反馈手写 SQL 不利于阅读维护，要求把已完成的 6 个路由文件（auth/catalog/cohorts/me/teacher/applications）全部换成 Drizzle query builder。范围只到应用代码；数据库结构的权威来源仍是 `src/db/migrations/*.sql` 手写迁移，`src/db/schema.ts` 只是给 Drizzle 提供类型和列名映射，两边字段必须保持一致但改表结构永远从改 `.sql` 开始。
+
+| 决定 | 理由 |
+|---|---|
+| Drizzle 只接入查询层，不接入迁移；`migrate.ts` 自定义迁移跑手写 `.sql` 保持不变 | 迁移系统本身在 T-06 已经过测试验证（幂等重跑、篡改检测），迁移换成 drizzle-kit 是另一个更大的决定，不在这次"SQL 好不好读"的诉求范围内；两套迁移方式混用会分裂成两个真相来源 |
+| `createApp(pool, opts)` 对外签名不变，内部才用 `createDb(pool)` 包成 drizzle 实例传给各路由 | 测试文件里大量 `pool.query(...)` 直接查库做断言（验证应用层之外的"地面真相"），如果对外也强制换成 db，等于要求测试断言也绕着 ORM 转一圈，反而降低了断言的独立性；只转内部查询逻辑，测试断言继续用原始 `pg.Pool` |
+| bigint 字段（`price_cents`/`paid_cents`/`refunded_cents`）在 schema 里声明 `mode:'number'` | 之前每个路由手动 `Number()` 转换（T-09 踩过的坑：pg 驱动把 bigint 序列化成字符串），现在这个转换在 schema 声明一次，所有查询自动拿到 number，不用每个 handler 各自记得转 |
+| Postgres 错误码判断（`isUniqueViolation`）抽成 `src/db/pgError.ts` 共享 helper，改为同时看 `err.code` 和 `err.cause.code` | drizzle 把底层 pg 驱动的错误包进 `DrizzleQueryError`，原始 `.code` 挂在 `.cause` 上不再是错误对象的直接属性；两个路由文件（teacher.ts、applications.ts）之前各自维护一份判断逻辑，抽出来避免以后只改一处、漏改另一处 |
+| confirm 端点的事务从手写 `BEGIN`/`COMMIT`/`ROLLBACK` 改成 `db.transaction(async tx => {...})`，用抛自定义错误类（`StaleConfirmation`）代替手动判断后调 `ROLLBACK` | drizzle 的事务包装器在回调抛错时自动回滚，不用每个失败分支都记得手动调用 `ROLLBACK`——手写版本能做对，但每加一个失败分支就多一处"记得回滚"的心智负担，用异常代替显式调用是把这个责任交给语言机制而不是靠人记住 |
+
+验证：`npx tsc -b --noEmit` 全工作区通过；`npm test --workspace=education-api` 67 passed（含原有全部反向验证用例）。反向验证：临时去掉 `PATCH .../draft` 里的 `eq(applications.studentId, actor.id)` 过滤，"不是本人的申请：404" 用例按预期变红，恢复后全绿——证明转换后授权判断的语义没有跟着变松。真实开发服务器（drizzle 版）+ 种子账号验证过登录、`/me/enrollments`、`/catalog/current`、创建并确认一张新申请（`db.transaction` 事务路径）、老师批量导入的部分拒绝逻辑；`Promise.all` 真并发确认测试连续跑 5 次稳定通过，确认切到 `db.transaction` 没有削弱原来的并发保护。测试产生的 `submitted` 申请因为 `application_events` 追加式表限制无法清理，与 T-12 时已知的情况相同。
 | 决定 | 理由 |
 |---|---|
 | `/catalog/current` 用 `is_current_sale = true ORDER BY start_at LIMIT 1` 选一条 | DB 的唯一索引是"每门课程最多一个当期在售班期"，不是全局唯一；系统里理论上可以有多门课程各自在售。契约没给筛选课程的参数，MVP 阶段只展示一个"当期"，取最早开课的一条；等有多课程并行招生的真实需求时再加课程维度的参数，不提前设计 |

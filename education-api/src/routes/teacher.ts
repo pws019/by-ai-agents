@@ -1,53 +1,33 @@
 // 老师基础维护/导入 API：班期、课次、手工报名、进度导入。契约见 contracts/education/openapi.yaml
 // 的 /teacher/cohorts、/teacher/lessons、/teacher/enrollments、/teacher/progress/import。
+import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import type pg from "pg";
 import { requireAuth, requireRole } from "../auth/middleware.js";
+import { isUniqueViolation } from "../db/pgError.js";
+import type { Db } from "../db/pool.js";
+import { cohorts, courseVersions, enrollments, learningProgress, lessons, orders, policies, users } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import { toEnrollment, type EnrollmentRow } from "./me.js";
 
-interface CohortRow {
-  id: string;
-  course_id: string;
-  course_version_id: string;
-  name: string;
-  start_at: Date | null;
-  price_cents: string | null; // bigint 以字符串形式返回，见 T-09 的坑
-  currency: string;
-  status: string;
-  is_current_sale: boolean;
-}
-
-function toCohort(row: CohortRow) {
+function toCohort(row: typeof cohorts.$inferSelect) {
   return {
     cohortId: row.id,
-    courseId: row.course_id,
-    courseVersionId: row.course_version_id,
+    courseId: row.courseId,
+    courseVersionId: row.courseVersionId,
     name: row.name,
-    startAt: row.start_at,
-    priceCents: row.price_cents === null ? null : Number(row.price_cents),
+    startAt: row.startAt,
+    priceCents: row.priceCents, // bigint 列，schema 里已声明 mode:'number'，这里不用再手动 Number() 转换
     currency: row.currency,
     status: row.status,
-    isCurrentSale: row.is_current_sale,
+    isCurrentSale: row.isCurrentSale,
   };
 }
 
-interface LessonRow {
-  id: string;
-  title: string;
-  position: number;
-  replay_asset_key: string | null;
+function toLesson(row: typeof lessons.$inferSelect) {
+  return { lessonId: row.id, title: row.title, order: row.position, hasReplay: row.replayAssetKey !== null };
 }
 
-function toLesson(row: LessonRow) {
-  return { lessonId: row.id, title: row.title, order: row.position, hasReplay: row.replay_asset_key !== null };
-}
-
-// Postgres 唯一约束冲突的错误码；用来把"业务上已经存在"翻译成 422 而不是让原始 SQL 错误冒出去。
-const UNIQUE_VIOLATION = "23505";
-const isUniqueViolation = (err: unknown): boolean => (err as { code?: string })?.code === UNIQUE_VIOLATION;
-
-export function createTeacherRoutes(pool: pg.Pool): Hono {
+export function createTeacherRoutes(db: Db): Hono {
   const app = new Hono();
   // 这一行是整份文件唯一的权限入口：所有 /teacher/* 路由先登录、再校验角色，
   // 具体每个 handler 不用重复写这两行判断。
@@ -61,29 +41,27 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
       return errorJson(c, 422, "VALIDATION_ERROR", "courseId/courseVersionId/name/status 必填");
     }
 
-    const { rows: courseVersionRows } = await pool.query(
-      "SELECT 1 FROM course_versions WHERE id = $1 AND course_id = $2",
-      [body.courseVersionId, body.courseId],
-    );
-    if (courseVersionRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "课程或课程版本不存在，或版本不属于该课程");
+    const [courseVersion] = await db
+      .select({ id: courseVersions.id })
+      .from(courseVersions)
+      .where(and(eq(courseVersions.id, body.courseVersionId), eq(courseVersions.courseId, body.courseId)));
+    if (!courseVersion) return errorJson(c, 404, "NOT_FOUND", "课程或课程版本不存在，或版本不属于该课程");
 
     try {
-      const { rows } = await pool.query<CohortRow>(
-        `INSERT INTO cohorts (course_id, course_version_id, name, start_at, price_cents, currency, status, is_current_sale)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         RETURNING id, course_id, course_version_id, name, start_at, price_cents, currency, status, is_current_sale`,
-        [
-          body.courseId,
-          body.courseVersionId,
-          body.name,
-          body.startAt ?? null,
-          body.priceCents ?? null,
-          body.currency ?? "CNY",
-          body.status,
-          body.isCurrentSale ?? false,
-        ],
-      );
-      return c.json(toCohort(rows[0]!), 201);
+      const [row] = await db
+        .insert(cohorts)
+        .values({
+          courseId: body.courseId,
+          courseVersionId: body.courseVersionId,
+          name: body.name,
+          startAt: body.startAt ?? null,
+          priceCents: body.priceCents ?? null,
+          currency: body.currency ?? "CNY",
+          status: body.status,
+          isCurrentSale: body.isCurrentSale ?? false,
+        })
+        .returning();
+      return c.json(toCohort(row!), 201);
     } catch (err) {
       if (isUniqueViolation(err)) return errorJson(c, 422, "VALIDATION_ERROR", "该课程已有当期在售班期");
       throw err;
@@ -95,27 +73,22 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
   app.patch("/teacher/cohorts/:cohortId", async (c) => {
     const cohortId = c.req.param("cohortId");
     const body = await c.req.json().catch(() => null);
-    const fields: Record<string, unknown> = {
+    const fields: Partial<typeof cohorts.$inferInsert> = {
       name: body?.name,
-      start_at: body?.startAt,
-      price_cents: body?.priceCents,
+      startAt: body?.startAt,
+      priceCents: body?.priceCents,
       status: body?.status,
-      is_current_sale: body?.isCurrentSale,
+      isCurrentSale: body?.isCurrentSale,
     };
-    const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
-    if (entries.length === 0) return errorJson(c, 422, "VALIDATION_ERROR", "至少提供一个要修改的字段");
-
-    const setClause = entries.map(([col], i) => `${col} = $${i + 2}`).join(", ");
-    const values = entries.map(([, v]) => v);
+    for (const key of Object.keys(fields) as (keyof typeof fields)[]) {
+      if (fields[key] === undefined) delete fields[key];
+    }
+    if (Object.keys(fields).length === 0) return errorJson(c, 422, "VALIDATION_ERROR", "至少提供一个要修改的字段");
 
     try {
-      const { rows } = await pool.query<CohortRow>(
-        `UPDATE cohorts SET ${setClause} WHERE id = $1
-         RETURNING id, course_id, course_version_id, name, start_at, price_cents, currency, status, is_current_sale`,
-        [cohortId, ...values],
-      );
-      if (rows.length === 0) return errorJson(c, 404, "NOT_FOUND", "班期不存在");
-      return c.json(toCohort(rows[0]!));
+      const [row] = await db.update(cohorts).set(fields).where(eq(cohorts.id, cohortId)).returning();
+      if (!row) return errorJson(c, 404, "NOT_FOUND", "班期不存在");
+      return c.json(toCohort(row));
     } catch (err) {
       if (isUniqueViolation(err)) return errorJson(c, 422, "VALIDATION_ERROR", "该课程已有当期在售班期");
       throw err;
@@ -130,16 +103,15 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
       return errorJson(c, 422, "VALIDATION_ERROR", "cohortId/title/position 必填");
     }
 
-    const { rows: cohortRows } = await pool.query("SELECT 1 FROM cohorts WHERE id = $1", [body.cohortId]);
-    if (cohortRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "班期不存在");
+    const [cohort] = await db.select({ id: cohorts.id }).from(cohorts).where(eq(cohorts.id, body.cohortId));
+    if (!cohort) return errorJson(c, 404, "NOT_FOUND", "班期不存在");
 
     try {
-      const { rows } = await pool.query<LessonRow>(
-        `INSERT INTO lessons (cohort_id, title, position, replay_asset_key) VALUES ($1,$2,$3,$4)
-         RETURNING id, title, position, replay_asset_key`,
-        [body.cohortId, body.title, body.position, body.replayAssetKey ?? null],
-      );
-      return c.json(toLesson(rows[0]!), 201);
+      const [row] = await db
+        .insert(lessons)
+        .values({ cohortId: body.cohortId, title: body.title, position: body.position, replayAssetKey: body.replayAssetKey ?? null })
+        .returning();
+      return c.json(toLesson(row!), 201);
     } catch (err) {
       if (isUniqueViolation(err)) return errorJson(c, 422, "VALIDATION_ERROR", "该班期下已有相同顺序的课次");
       throw err;
@@ -151,24 +123,20 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
   app.patch("/teacher/lessons/:lessonId", async (c) => {
     const lessonId = c.req.param("lessonId");
     const body = await c.req.json().catch(() => null);
-    const fields: Record<string, unknown> = {
+    const fields: Partial<typeof lessons.$inferInsert> = {
       title: body?.title,
       position: body?.position,
-      replay_asset_key: body?.replayAssetKey,
+      replayAssetKey: body?.replayAssetKey,
     };
-    const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
-    if (entries.length === 0) return errorJson(c, 422, "VALIDATION_ERROR", "至少提供一个要修改的字段");
-
-    const setClause = entries.map(([col], i) => `${col} = $${i + 2}`).join(", ");
-    const values = entries.map(([, v]) => v);
+    for (const key of Object.keys(fields) as (keyof typeof fields)[]) {
+      if (fields[key] === undefined) delete fields[key];
+    }
+    if (Object.keys(fields).length === 0) return errorJson(c, 422, "VALIDATION_ERROR", "至少提供一个要修改的字段");
 
     try {
-      const { rows } = await pool.query<LessonRow>(
-        `UPDATE lessons SET ${setClause} WHERE id = $1 RETURNING id, title, position, replay_asset_key`,
-        [lessonId, ...values],
-      );
-      if (rows.length === 0) return errorJson(c, 404, "NOT_FOUND", "课次不存在");
-      return c.json(toLesson(rows[0]!));
+      const [row] = await db.update(lessons).set(fields).where(eq(lessons.id, lessonId)).returning();
+      if (!row) return errorJson(c, 404, "NOT_FOUND", "课次不存在");
+      return c.json(toLesson(row));
     } catch (err) {
       if (isUniqueViolation(err)) return errorJson(c, 422, "VALIDATION_ERROR", "该班期下已有相同顺序的课次");
       throw err;
@@ -183,40 +151,37 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
       return errorJson(c, 422, "VALIDATION_ERROR", "studentId/cohortId/policyId/paidCents 必填");
     }
 
-    const { rows: studentRows } = await pool.query<{ role: string }>("SELECT role FROM users WHERE id = $1", [body.studentId]);
-    if (studentRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "学员不存在");
-    if (studentRows[0]!.role !== "student") return errorJson(c, 422, "VALIDATION_ERROR", "studentId 对应的账号不是学员角色");
+    const [student] = await db.select({ role: users.role }).from(users).where(eq(users.id, body.studentId));
+    if (!student) return errorJson(c, 404, "NOT_FOUND", "学员不存在");
+    if (student.role !== "student") return errorJson(c, 422, "VALIDATION_ERROR", "studentId 对应的账号不是学员角色");
 
-    const { rows: cohortRows } = await pool.query("SELECT 1 FROM cohorts WHERE id = $1", [body.cohortId]);
-    if (cohortRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "班期不存在");
-    const { rows: policyRows } = await pool.query("SELECT 1 FROM policies WHERE id = $1", [body.policyId]);
-    if (policyRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "政策不存在");
+    const [cohort] = await db.select({ id: cohorts.id }).from(cohorts).where(eq(cohorts.id, body.cohortId));
+    if (!cohort) return errorJson(c, 404, "NOT_FOUND", "班期不存在");
+    const [policy] = await db.select({ id: policies.id, version: policies.version }).from(policies).where(eq(policies.id, body.policyId));
+    if (!policy) return errorJson(c, 404, "NOT_FOUND", "政策不存在");
 
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      const { rows: orderRows } = await client.query<{ id: string }>(
-        `INSERT INTO orders (student_id, cohort_id, policy_id, paid_cents, source)
-         VALUES ($1,$2,$3,$4,'manual') RETURNING id`,
-        [body.studentId, body.cohortId, body.policyId, body.paidCents],
-      );
-      const { rows: enrollmentRows } = await client.query<EnrollmentRow>(
-        `WITH inserted AS (
-           INSERT INTO enrollments (student_id, order_id, cohort_id, status)
-           VALUES ($1,$2,$3,'active') RETURNING id, status, revision, cohort_id
-         )
-         SELECT i.id, i.status, i.revision, c.id AS cohort_id, c.name, c.start_at, p.version AS policy_version
-         FROM inserted i JOIN cohorts c ON c.id = i.cohort_id JOIN policies p ON p.id = $4`,
-        [body.studentId, orderRows[0]!.id, body.cohortId, body.policyId],
-      );
-      await client.query("COMMIT");
-      return c.json(toEnrollment(enrollmentRows[0]!), 201);
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
+    const enrollment = await db.transaction(async (tx) => {
+      const [order] = await tx
+        .insert(orders)
+        .values({ studentId: body.studentId, cohortId: body.cohortId, policyId: body.policyId, paidCents: body.paidCents, source: "manual" })
+        .returning({ id: orders.id });
+      const [inserted] = await tx
+        .insert(enrollments)
+        .values({ studentId: body.studentId, orderId: order!.id, cohortId: body.cohortId, status: "active" })
+        .returning();
+      const [cohortDetail] = await tx.select({ name: cohorts.name, startAt: cohorts.startAt }).from(cohorts).where(eq(cohorts.id, body.cohortId));
+      const row: EnrollmentRow = {
+        id: inserted!.id,
+        status: inserted!.status,
+        revision: inserted!.revision,
+        cohortId: body.cohortId,
+        name: cohortDetail!.name,
+        startAt: cohortDetail!.startAt,
+        policyVersion: policy.version,
+      };
+      return row;
+    });
+    return c.json(toEnrollment(enrollment), 201);
   });
 
   // POST /teacher/progress/import —— 批量录入学习进度。逐条独立校验和写入，一条不合法
@@ -238,31 +203,29 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
         continue;
       }
 
-      const { rows: lessonRows } = await pool.query<{ cohort_id: string }>(
-        "SELECT cohort_id FROM lessons WHERE id = $1",
-        [lessonId],
-      );
-      if (lessonRows.length === 0) {
+      const [lesson] = await db.select({ cohortId: lessons.cohortId }).from(lessons).where(eq(lessons.id, lessonId));
+      if (!lesson) {
         rejected.push({ studentId, lessonId, reason: "课次不存在" });
         continue;
       }
 
       // 只允许给真的在这个班期报名的学员录入进度，不能凭一个 studentId 就无中生有地建记录。
-      const { rows: enrollmentRows } = await pool.query(
-        "SELECT 1 FROM enrollments WHERE student_id = $1 AND cohort_id = $2 AND status = 'active'",
-        [studentId, lessonRows[0]!.cohort_id],
-      );
-      if (enrollmentRows.length === 0) {
+      const [enrollment] = await db
+        .select({ id: enrollments.id })
+        .from(enrollments)
+        .where(and(eq(enrollments.studentId, studentId), eq(enrollments.cohortId, lesson.cohortId), eq(enrollments.status, "active")));
+      if (!enrollment) {
         rejected.push({ studentId, lessonId, reason: "该学员未在此课次所属班期报名" });
         continue;
       }
 
-      await pool.query(
-        `INSERT INTO learning_progress (student_id, lesson_id, status, source)
-         VALUES ($1,$2,$3,'import')
-         ON CONFLICT (student_id, lesson_id) DO UPDATE SET status = EXCLUDED.status, source = 'import'`,
-        [studentId, lessonId, status],
-      );
+      await db
+        .insert(learningProgress)
+        .values({ studentId, lessonId, status: status as "not_started" | "in_progress" | "completed", source: "import" })
+        .onConflictDoUpdate({
+          target: [learningProgress.studentId, learningProgress.lessonId],
+          set: { status: status as "not_started" | "in_progress" | "completed", source: "import" },
+        });
       applied++;
     }
 

@@ -2,50 +2,29 @@
 // 状态机：draft →(confirm)→ submitted →(老师 request-info/propose/approve/reject)→ ...；
 // draft 阶段可以反复 PATCH，每次编辑都让旧确认卡失效——这是 AC-005 的来源。
 import { createHash } from "node:crypto";
+import { and, desc, eq, gt, isNull, notInArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import type pg from "pg";
 import { requireAuth } from "../auth/middleware.js";
+import { isUniqueViolation } from "../db/pgError.js";
+import type { Db } from "../db/pool.js";
+import { applicationEvents, applications, cohorts, confirmations, enrollments } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import { claimIdempotencyKey, fulfillIdempotencyKey } from "../idempotency.js";
 
-const UNIQUE_VIOLATION = "23505";
-const isUniqueViolation = (err: unknown): boolean => (err as { code?: string })?.code === UNIQUE_VIOLATION;
+type ApplicationRow = typeof applications.$inferSelect;
+type ActiveConfirmation = { id: string; expiresAt: Date };
 
 // 确认卡有效期：设计决定，见 progress.md T-12——没有产品侧给出具体数字，
 // 15 分钟是"够学员看清摘要再点确认，又不会长到失效的旧摘要还能被拿去用"的工程判断，
 // 不是业务事实，不写进对外文案。
 const CONFIRMATION_TTL_MS = 15 * 60 * 1000;
 
-interface ApplicationRow {
-  id: string;
-  student_id: string;
-  enrollment_id: string;
-  type: string;
-  reason: string;
-  target_cohort_id: string | null;
-  status: string;
-  execution_status: string;
-  proposal: { refundCents?: number } | null;
-  revision: number;
-  confirmed_revision: number | null;
-  created_at: Date;
-  updated_at: Date;
-}
-
-interface ActiveConfirmation {
-  id: string;
-  expires_at: Date;
-}
-
-const APPLICATION_COLUMNS =
-  "id, student_id, enrollment_id, type, reason, target_cohort_id, status, execution_status, proposal, revision, confirmed_revision, created_at, updated_at";
-
 function summaryOf(row: ApplicationRow) {
   return {
     type: row.type,
-    enrollmentId: row.enrollment_id,
+    enrollmentId: row.enrollmentId,
     reason: row.reason,
-    targetCohortId: row.target_cohort_id,
+    targetCohortId: row.targetCohortId,
     refundCents: row.proposal?.refundCents ?? null,
   };
 }
@@ -60,9 +39,9 @@ function toApplication(row: ApplicationRow, active?: ActiveConfirmation) {
   return {
     id: row.id,
     type: row.type,
-    enrollmentId: row.enrollment_id,
+    enrollmentId: row.enrollmentId,
     status: row.status,
-    executionStatus: row.execution_status,
+    executionStatus: row.executionStatus,
     revision: row.revision,
     summary: summaryOf(row),
     proposal: row.proposal ?? null,
@@ -72,13 +51,13 @@ function toApplication(row: ApplicationRow, active?: ActiveConfirmation) {
             confirmationId: active.id,
             applicationId: row.id,
             revision: row.revision,
-            expiresAt: active.expires_at,
+            expiresAt: active.expiresAt,
             summary: summaryOf(row),
           },
         }
       : {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -87,19 +66,20 @@ function toApplicationDraft(row: ApplicationRow, active: ActiveConfirmation) {
   return { id: app.id, revision: app.revision, status: app.status, summary: app.summary, confirmation: app.pendingConfirmation };
 }
 
-async function issueConfirmation(pool: pg.Pool, actorId: string, row: ApplicationRow): Promise<ActiveConfirmation> {
+// db 和 tx 共享同一个类型（drizzle 的事务对象本身实现了 Db 的查询接口），
+// 这样这个 helper 既能在普通请求里用，也能在 confirm 的事务内部复用，不用写两份。
+async function issueConfirmation(db: Db, actorId: string, row: ApplicationRow): Promise<ActiveConfirmation> {
   const expiresAt = new Date(Date.now() + CONFIRMATION_TTL_MS);
-  const { rows } = await pool.query<{ id: string; expires_at: Date }>(
-    `INSERT INTO confirmations (user_id, application_id, payload_hash, revision, expires_at)
-     VALUES ($1,$2,$3,$4,$5) RETURNING id, expires_at`,
-    [actorId, row.id, payloadHashOf(row), row.revision, expiresAt],
-  );
-  return rows[0]!;
+  const [inserted] = await db
+    .insert(confirmations)
+    .values({ userId: actorId, applicationId: row.id, payloadHash: payloadHashOf(row), revision: row.revision, expiresAt })
+    .returning({ id: confirmations.id, expiresAt: confirmations.expiresAt });
+  return inserted!;
 }
 
 // 简单的不透明游标：base64("created_at|id")，按 (created_at, id) 降序翻页。
-function encodeCursor(row: { created_at: Date; id: string }): string {
-  return Buffer.from(`${row.created_at.toISOString()}|${row.id}`).toString("base64url");
+function encodeCursor(row: { createdAt: Date; id: string }): string {
+  return Buffer.from(`${row.createdAt.toISOString()}|${row.id}`).toString("base64url");
 }
 function decodeCursor(cursor: string): { createdAt: string; id: string } | null {
   try {
@@ -110,7 +90,7 @@ function decodeCursor(cursor: string): { createdAt: string; id: string } | null 
   }
 }
 
-export function createApplicationRoutes(pool: pg.Pool): Hono {
+export function createApplicationRoutes(db: Db): Hono {
   const app = new Hono();
   app.use("/applications/*", requireAuth);
   app.use("/me/applications", requireAuth);
@@ -129,44 +109,59 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
       return errorJson(c, 422, "VALIDATION_ERROR", "targetCohortId 格式不对");
     }
 
-    const { rows: enrollmentRows } = await pool.query(
-      "SELECT 1 FROM enrollments WHERE id = $1 AND student_id = $2 AND status = 'active'",
-      [body.enrollmentId, actor.id],
-    );
-    if (enrollmentRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "报名不存在，或不属于当前学员，或已结束");
+    const [enrollment] = await db
+      .select({ id: enrollments.id })
+      .from(enrollments)
+      .where(and(eq(enrollments.id, body.enrollmentId), eq(enrollments.studentId, actor.id), eq(enrollments.status, "active")));
+    if (!enrollment) return errorJson(c, 404, "NOT_FOUND", "报名不存在，或不属于当前学员，或已结束");
 
     if (body.targetCohortId) {
-      const { rows: cohortRows } = await pool.query("SELECT 1 FROM cohorts WHERE id = $1", [body.targetCohortId]);
-      if (cohortRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "目标班期不存在");
+      const [cohort] = await db.select({ id: cohorts.id }).from(cohorts).where(eq(cohorts.id, body.targetCohortId));
+      if (!cohort) return errorJson(c, 404, "NOT_FOUND", "目标班期不存在");
     }
 
     try {
-      const { rows } = await pool.query<ApplicationRow>(
-        `INSERT INTO applications (student_id, enrollment_id, type, reason, target_cohort_id, status)
-         VALUES ($1,$2,$3,$4,$5,'draft') RETURNING ${APPLICATION_COLUMNS}`,
-        [actor.id, body.enrollmentId, body.type, body.reason, body.targetCohortId ?? null],
-      );
-      const row = rows[0]!;
-      const confirmation = await issueConfirmation(pool, actor.id, row);
-      return c.json(toApplicationDraft(row, confirmation), 201);
+      const [row] = await db
+        .insert(applications)
+        .values({
+          studentId: actor.id,
+          enrollmentId: body.enrollmentId,
+          type: body.type,
+          reason: body.reason,
+          targetCohortId: body.targetCohortId ?? null,
+          status: "draft",
+        })
+        .returning();
+      const confirmation = await issueConfirmation(db, actor.id, row!);
+      return c.json(toApplicationDraft(row!, confirmation), 201);
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
-      const { rows } = await pool.query<ApplicationRow>(
-        `SELECT ${APPLICATION_COLUMNS} FROM applications WHERE enrollment_id = $1 AND type = $2
-         AND status NOT IN ('approved','rejected','withdrawn')`,
-        [body.enrollmentId, body.type],
-      );
-      const existing = rows[0];
+      const [existing] = await db
+        .select()
+        .from(applications)
+        .where(
+          and(
+            eq(applications.enrollmentId, body.enrollmentId),
+            eq(applications.type, body.type),
+            notInArray(applications.status, ["approved", "rejected", "withdrawn"]),
+          ),
+        );
       if (!existing) throw err; // 唯一索引刚才确实拦了一次插入，这里应该总能查到；查不到说明假设被打破
       if (existing.status !== "draft") {
         return errorJson(c, 409, "INVALID_STATE", "该报名已有一张进行中的同类型申请，请先处理");
       }
-      const { rows: activeRows } = await pool.query<ActiveConfirmation>(
-        `SELECT id, expires_at FROM confirmations
-         WHERE application_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now()`,
-        [existing.id],
-      );
-      const confirmation = activeRows[0] ?? (await issueConfirmation(pool, actor.id, existing));
+      const [active] = await db
+        .select({ id: confirmations.id, expiresAt: confirmations.expiresAt })
+        .from(confirmations)
+        .where(
+          and(
+            eq(confirmations.applicationId, existing.id),
+            isNull(confirmations.usedAt),
+            isNull(confirmations.revokedAt),
+            gt(confirmations.expiresAt, sql`now()`),
+          ),
+        );
+      const confirmation = active ?? (await issueConfirmation(db, actor.id, existing));
       return c.json(toApplicationDraft(existing, confirmation), 200);
     }
   });
@@ -181,70 +176,47 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
       return errorJson(c, 422, "VALIDATION_ERROR", "expectedRevision 必填");
     }
 
-    const { rows: existingRows } = await pool.query<ApplicationRow>(
-      `SELECT ${APPLICATION_COLUMNS} FROM applications WHERE id = $1 AND student_id = $2`,
-      [applicationId, actor.id],
-    );
-    const existing = existingRows[0];
+    const [existing] = await db
+      .select()
+      .from(applications)
+      .where(and(eq(applications.id, applicationId), eq(applications.studentId, actor.id)));
     if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
     if (existing.status !== "draft") return errorJson(c, 409, "INVALID_STATE", "已提交的申请不能再编辑草稿");
 
     if (body.targetCohortId) {
-      const { rows: cohortRows } = await pool.query("SELECT 1 FROM cohorts WHERE id = $1", [body.targetCohortId]);
-      if (cohortRows.length === 0) return errorJson(c, 404, "NOT_FOUND", "目标班期不存在");
+      const [cohort] = await db.select({ id: cohorts.id }).from(cohorts).where(eq(cohorts.id, body.targetCohortId));
+      if (!cohort) return errorJson(c, 404, "NOT_FOUND", "目标班期不存在");
     }
 
-    const fields: Record<string, unknown> = { reason: body.reason, target_cohort_id: body.targetCohortId };
-    const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
-    const setClause = entries.map(([col], i) => `${col} = $${i + 3}`).join(", ");
-    const values = entries.map(([, v]) => v);
+    const fields: Partial<typeof applications.$inferInsert> = { reason: body.reason, targetCohortId: body.targetCohortId };
+    for (const key of Object.keys(fields) as (keyof typeof fields)[]) {
+      if (fields[key] === undefined) delete fields[key];
+    }
 
-    // WHERE 里带 revision = $2：判断和更新在同一条 SQL 里原子完成，不是先查 revision 再单独 UPDATE——
-    // 否则两个并发 PATCH 会都读到旧 revision、都以为自己能改，其中一个的修改会被悄悄覆盖。
-    const { rows } = await pool.query<ApplicationRow>(
-      `UPDATE applications SET revision = revision + 1${entries.length ? ", " + setClause : ""}
-       WHERE id = $1 AND revision = $2 RETURNING ${APPLICATION_COLUMNS}`,
-      [applicationId, body.expectedRevision, ...values],
-    );
-    if (rows.length === 0) {
+    // WHERE 里带 revision = expectedRevision：判断和更新在同一条 SQL 里原子完成，不是先查 revision
+    // 再单独 UPDATE——否则两个并发 PATCH 会都读到旧 revision、都以为自己能改，其中一个的修改会被悄悄覆盖。
+    const [updated] = await db
+      .update(applications)
+      .set({ ...fields, revision: sql`${applications.revision} + 1` })
+      .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision)))
+      .returning();
+    if (!updated) {
       return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
     }
-    const updated = rows[0]!;
 
-    await pool.query(
-      `UPDATE confirmations SET revoked_at = now() WHERE application_id = $1 AND used_at IS NULL AND revoked_at IS NULL`,
-      [applicationId],
-    );
-    const confirmation = await issueConfirmation(pool, actor.id, updated);
+    await db
+      .update(confirmations)
+      .set({ revokedAt: sql`now()` })
+      .where(and(eq(confirmations.applicationId, applicationId), isNull(confirmations.usedAt), isNull(confirmations.revokedAt)));
+    const confirmation = await issueConfirmation(db, actor.id, updated);
     return c.json(toApplicationDraft(updated, confirmation));
   });
 
-  // POST /applications/:id/confirm —— 学员手写练习，见 progress.md T-12 与本次教学记录。
-  // 契约：confirmationId,expectedRevision → submitted。核心是把"确认卡还没被用过"和
-  // "revision 没变"两件事，跟"标记为已用/推进状态"绑在同一条原子 SQL 里做完，
-  // 而不是先 SELECT 确认再 UPDATE——参考 T-06 Q1 的 TOCTOU 结论，这里是同一个坑在 UPDATE 语句上的版本。
-  //
-  // 需要覆盖的行为（对应下面 applications.test.ts 里已经写好、目前会失败的用例）：
-  //   1. 正常路径：confirmationId 未用/未撤销/未过期，且其 revision 等于 body.expectedRevision
-  //      且等于 applications.revision（三者本该一致，但不能只检查其中一个）——
-  //      原子地把该确认卡标记为已用（UPDATE ... SET used_at = now() WHERE id=$1 AND used_at IS NULL
-  //      AND revoked_at IS NULL AND expires_at > now() RETURNING *，rowCount=0 就说明抢不到），
-  //      再把 applications.status 改成 submitted、confirmed_revision 记为这次的 revision，
-  //      并在 application_events 里追加一条 eventType='submitted' 的审计记录。
-  //   2. 重复调用同一个 confirmationId（网络重试/学员手抖点两次）：第二次请求原子标记会失败
-  //      （used_at 已经不是 NULL），但如果检查后发现"是同一张确认卡、且申请确实已经是
-  //      submitted+这个 revision"，应该当成幂等重放处理，返回 200 和当前状态，而不是报错——
-  //      调用方分不清"我点了两下"和"别人抢先了"，但系统能区分：前者最终状态和自己期望的一致。
-  //   3. 草稿被改过之后才点旧的确认卡（AC-005）：confirmationId 存在但 revision 对不上当前
-  //      applications.revision（比如学员在另一个标签页 PATCH 过），返回 409 STALE_CONFIRMATION，
-  //      details 里带 currentRevision 和 expectedRevision（参考契约里 confirm 的 409 示例）。
-  //   4. confirmationId 不存在 / 不属于这个 applicationId / 已撤销 / 已过期：同样是 409
-  //      STALE_CONFIRMATION（对调用方来说都是"这张确认卡不能用了"，不需要在响应里区分具体原因）。
-  //   5. 只有 owner（student_id = actor.id）能确认自己的申请——不存在或不是本人的，404。
-  //   6. 支持 Idempotency-Key（本文件顶部已 import requireAuth；claimIdempotencyKey /
-  //      fulfillIdempotencyKey 在 ../idempotency.ts，用法参考其文件头注释）：同一个
-  //      (actor, "confirmApplication", key) 重试且请求体一致，不要重复执行业务逻辑，
-  //      直接返回当前 applicationId 对应的最新状态。
+  // POST /applications/:id/confirm —— 契约：confirmationId,expectedRevision → submitted。
+  // 核心是把"确认卡还没被用过"和"revision 没变"两件事，跟"标记为已用/推进状态"绑在同一条
+  // 原子 UPDATE 里做完，而不是先 SELECT 确认再 UPDATE（T-06 Q1 的 TOCTOU 结论，这次在 UPDATE 上）。
+  // 两条 UPDATE 包进同一个 db.transaction：任何一步失败，drizzle 在回调里抛出错误就会自动整体回滚，
+  // 不会出现"确认卡被 claim 了但申请没转态"的半成品状态。
   app.post("/applications/:applicationId/confirm", async (c) => {
     const actor = c.get("actor")!;
     const applicationId = c.req.param("applicationId");
@@ -254,11 +226,10 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
     }
     const idempotencyKey = c.req.header("Idempotency-Key");
 
-    const { rows: existingRows } = await pool.query<ApplicationRow>(
-      `SELECT ${APPLICATION_COLUMNS} FROM applications WHERE id = $1 AND student_id = $2`,
-      [applicationId, actor.id],
-    );
-    const application = existingRows[0];
+    const [application] = await db
+      .select()
+      .from(applications)
+      .where(and(eq(applications.id, applicationId), eq(applications.studentId, actor.id)));
     if (!application) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
 
     // Idempotency-Key 重放：只有确认过"上一次真的成功过"（result_id 有值）才直接回读结果，
@@ -266,27 +237,25 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
     // 不能因为 key 重复出现就假装上次成功了，那样会把一次真实的失败悄悄变成假的成功。
     if (idempotencyKey) {
       const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
-      const claim = await claimIdempotencyKey(pool, actor.id, "confirmApplication", idempotencyKey, requestHash);
+      const claim = await claimIdempotencyKey(db, actor.id, "confirmApplication", idempotencyKey, requestHash);
       if (claim.kind === "conflict") {
         return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
       }
       if (claim.kind === "replay" && claim.resultId) {
-        const { rows } = await pool.query<ApplicationRow>(`SELECT ${APPLICATION_COLUMNS} FROM applications WHERE id = $1`, [
-          claim.resultId,
-        ]);
-        return c.json(toApplication(rows[0]!));
+        const [row] = await db.select().from(applications).where(eq(applications.id, claim.resultId));
+        return c.json(toApplication(row!));
       }
     }
 
     // 同一张确认卡已经把这张申请确认过了（网络重试/手抖点两次）：当成幂等重放，
     // 返回当前状态而不是报错——这一步不依赖 Idempotency-Key 头，只看确认卡本身是否已用于这张申请。
     if (application.status === "submitted") {
-      const { rows: usedRows } = await pool.query(
-        `SELECT 1 FROM confirmations WHERE id = $1 AND application_id = $2 AND used_at IS NOT NULL`,
-        [body.confirmationId, applicationId],
-      );
-      if (usedRows.length > 0) {
-        if (idempotencyKey) await fulfillIdempotencyKey(pool, actor.id, "confirmApplication", idempotencyKey, applicationId);
+      const [used] = await db
+        .select({ id: confirmations.id })
+        .from(confirmations)
+        .where(and(eq(confirmations.id, body.confirmationId), eq(confirmations.applicationId, applicationId), sql`${confirmations.usedAt} is not null`));
+      if (used) {
+        if (idempotencyKey) await fulfillIdempotencyKey(db, actor.id, "confirmApplication", idempotencyKey, applicationId);
         return c.json(toApplication(application));
       }
     }
@@ -294,54 +263,50 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
       return errorJson(c, 409, "INVALID_STATE", "只有草稿状态的申请可以确认");
     }
 
-    const client = await pool.connect();
+    class StaleConfirmation extends Error {}
+
     try {
-      await client.query("BEGIN");
+      const updated = await db.transaction(async (tx) => {
+        // 把"确认卡还没被用过"和"标记为已用"合并进同一条 UPDATE：两个并发请求同时到达，
+        // 数据库保证只有一个能匹配到行，另一个原子地拿到空结果——不是先 SELECT 判断再 UPDATE。
+        const [claimed] = await tx
+          .update(confirmations)
+          .set({ usedAt: sql`now()` })
+          .where(
+            and(
+              eq(confirmations.id, body.confirmationId),
+              eq(confirmations.applicationId, applicationId),
+              isNull(confirmations.usedAt),
+              isNull(confirmations.revokedAt),
+              gt(confirmations.expiresAt, sql`now()`),
+            ),
+          )
+          .returning({ revision: confirmations.revision });
+        if (!claimed || claimed.revision !== body.expectedRevision) throw new StaleConfirmation();
+        const revision = claimed.revision;
 
-      // 把"确认卡还没被用过"和"标记为已用"合并进同一条 UPDATE：两个并发请求同时到达，
-      // 数据库保证只有一个能把 rowCount 改成 1，另一个原子地拿到 0——不是先 SELECT 判断再 UPDATE。
-      const claim = await client.query<{ revision: number }>(
-        `UPDATE confirmations SET used_at = now()
-         WHERE id = $1 AND application_id = $2 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now()
-         RETURNING revision`,
-        [body.confirmationId, applicationId],
-      );
-      if (claim.rowCount === 0 || claim.rows[0]!.revision !== body.expectedRevision) {
-        await client.query("ROLLBACK");
-        return errorJson(c, 409, "STALE_CONFIRMATION", "确认卡已失效，请查看最新摘要后重新确认");
-      }
-      const revision = claim.rows[0]!.revision;
+        // 同理，revision/status 校验也写进这条 UPDATE 的 WHERE，不是先查再判断——两者是同一个 TOCTOU 坑。
+        // 理论上不该在这里失败（PATCH 会连带撤销旧确认卡）；失败说明前面哪个假设被打破了，
+        // 抛错让整个事务（包括上面刚 claim 的确认卡）一起回滚，不留半成品状态。
+        const [row] = await tx
+          .update(applications)
+          .set({ status: "submitted", confirmedRevision: revision })
+          .where(and(eq(applications.id, applicationId), eq(applications.revision, revision), eq(applications.status, "draft")))
+          .returning();
+        if (!row) throw new StaleConfirmation();
 
-      // 同理，revision 校验也写进这条 UPDATE 的 WHERE，不是先查再判断——两者是同一个 TOCTOU 坑。
-      const updated = await client.query<ApplicationRow>(
-        `UPDATE applications SET status = 'submitted', confirmed_revision = $2
-         WHERE id = $1 AND revision = $2 AND status = 'draft'
-         RETURNING ${APPLICATION_COLUMNS}`,
-        [applicationId, revision],
-      );
-      if (updated.rowCount === 0) {
-        // 确认卡合法但申请状态/版本对不上，理论上不该发生（PATCH 会连带撤销旧确认卡）；
-        // 出现说明前面哪个假设被打破了。ROLLBACK 会把上面刚 claim 的确认卡也一并撤销，
-        // 不会出现"确认卡被烧掉但什么都没发生"的半成品状态。
-        await client.query("ROLLBACK");
-        return errorJson(c, 409, "STALE_CONFIRMATION", "确认卡已失效，请查看最新摘要后重新确认");
-      }
+        await tx.insert(applicationEvents).values({ applicationId, actorId: actor.id, eventType: "submitted", revision, details: {} });
 
-      await client.query(
-        `INSERT INTO application_events (application_id, actor_id, event_type, revision, details)
-         VALUES ($1,$2,'submitted',$3,'{}')`,
-        [applicationId, actor.id, revision],
-      );
+        return row;
+      });
 
-      await client.query("COMMIT");
-
-      if (idempotencyKey) await fulfillIdempotencyKey(pool, actor.id, "confirmApplication", idempotencyKey, applicationId);
-      return c.json(toApplication(updated.rows[0]!));
+      if (idempotencyKey) await fulfillIdempotencyKey(db, actor.id, "confirmApplication", idempotencyKey, applicationId);
+      return c.json(toApplication(updated));
     } catch (err) {
-      await client.query("ROLLBACK");
+      if (err instanceof StaleConfirmation) {
+        return errorJson(c, 409, "STALE_CONFIRMATION", "确认卡已失效，请查看最新摘要后重新确认");
+      }
       throw err;
-    } finally {
-      client.release();
     }
   });
 
@@ -353,12 +318,17 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
     const cursor = cursorParam ? decodeCursor(cursorParam) : null;
     if (cursorParam && !cursor) return errorJson(c, 422, "VALIDATION_ERROR", "cursor 格式不对");
 
-    const { rows } = await pool.query<ApplicationRow>(
-      `SELECT ${APPLICATION_COLUMNS} FROM applications
-       WHERE student_id = $1 AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
-       ORDER BY created_at DESC, id DESC LIMIT $4`,
-      [actor.id, cursor?.createdAt ?? null, cursor?.id ?? null, limit],
-    );
+    const rows = await db
+      .select()
+      .from(applications)
+      .where(
+        and(
+          eq(applications.studentId, actor.id),
+          cursor ? sql`(${applications.createdAt}, ${applications.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id})` : undefined,
+        ),
+      )
+      .orderBy(desc(applications.createdAt), desc(applications.id))
+      .limit(limit);
     const nextCursor = rows.length === limit ? encodeCursor(rows[rows.length - 1]!) : null;
     return c.json({ items: rows.map((r) => toApplication(r)), nextCursor });
   });
@@ -367,37 +337,36 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
   // 不区分"不存在"和"存在但不是你的"，避免把"这个 id 是否存在"泄露给无关的人。
   app.get("/applications/:applicationId", requireAuth, async (c) => {
     const actor = c.get("actor")!;
-    const applicationId = c.req.param("applicationId");
+    const applicationId = c.req.param("applicationId")!;
 
-    const { rows } = await pool.query<ApplicationRow>(
-      `SELECT ${APPLICATION_COLUMNS} FROM applications WHERE id = $1`,
-      [applicationId],
-    );
-    const row = rows[0];
-    if (!row || (actor.role !== "teacher" && row.student_id !== actor.id)) {
+    const [row] = await db.select().from(applications).where(eq(applications.id, applicationId));
+    if (!row || (actor.role !== "teacher" && row.studentId !== actor.id)) {
       return errorJson(c, 404, "NOT_FOUND", "申请不存在");
     }
 
-    const { rows: activeRows } = await pool.query<ActiveConfirmation>(
-      `SELECT id, expires_at FROM confirmations
-       WHERE application_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now()`,
-      [applicationId],
-    );
-    const { rows: eventRows } = await pool.query(
-      `SELECT event_type, actor_id, revision, details, created_at FROM application_events
-       WHERE application_id = $1 ORDER BY created_at ASC`,
-      [applicationId],
-    );
-    return c.json({
-      ...toApplication(row, activeRows[0]),
-      events: eventRows.map((e) => ({
-        eventType: e.event_type,
-        actorId: e.actor_id,
-        revision: e.revision,
-        details: e.details,
-        createdAt: e.created_at,
-      })),
-    });
+    const [active] = await db
+      .select({ id: confirmations.id, expiresAt: confirmations.expiresAt })
+      .from(confirmations)
+      .where(
+        and(
+          eq(confirmations.applicationId, applicationId),
+          isNull(confirmations.usedAt),
+          isNull(confirmations.revokedAt),
+          gt(confirmations.expiresAt, sql`now()`),
+        ),
+      );
+    const events = await db
+      .select({
+        eventType: applicationEvents.eventType,
+        actorId: applicationEvents.actorId,
+        revision: applicationEvents.revision,
+        details: applicationEvents.details,
+        createdAt: applicationEvents.createdAt,
+      })
+      .from(applicationEvents)
+      .where(eq(applicationEvents.applicationId, applicationId))
+      .orderBy(applicationEvents.createdAt);
+    return c.json({ ...toApplication(row, active), events });
   });
 
   return app;

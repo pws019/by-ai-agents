@@ -3,7 +3,7 @@
 // 因为有些路由（登录、公开招生信息）本来就允许匿名访问。
 import type { Context, Next } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import type pg from "pg";
+import type { Db } from "../db/pool.js";
 import { errorJson } from "../http/errors.js";
 import { resolveSession, type SessionUser } from "./session.js";
 
@@ -32,10 +32,10 @@ export function clearSessionCookie(c: Context) {
 }
 
 /** 挂在 app 最外层：解析 cookie → 查会话 → 挂到 c.get('actor')。之后的路由直接读，不用再碰 cookie。 */
-export function withActor(pool: pg.Pool) {
+export function withActor(db: Db) {
   return async (c: Context, next: Next) => {
     const token = getCookie(c, SESSION_COOKIE);
-    c.set("actor", token ? await resolveSession(pool, token) : null);
+    c.set("actor", token ? await resolveSession(db, token) : null);
     await next();
   };
 }

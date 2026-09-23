@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import type pg from "pg";
 import { withActor } from "./auth/middleware.js";
+import { createDb } from "./db/pool.js";
 import { withRequestId } from "./http/request-id.js";
 import { requireSameOrigin } from "./http/same-origin.js";
 import { createApplicationRoutes } from "./routes/applications.js";
@@ -18,19 +19,20 @@ const API_PREFIX = "/api/v1";
 export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string }): Hono {
   const app = new Hono();
   const allowedOrigin = opts?.allowedOrigin ?? process.env.ALLOWED_ORIGIN ?? "http://localhost:5173";
+  const db = createDb(pool);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
   const api = new Hono();
   api.use(withRequestId);
-  api.use(withActor(pool));
+  api.use(withActor(db));
   api.use(requireSameOrigin(allowedOrigin));
-  api.route("/", createAuthRoutes(pool));
-  api.route("/", createApplicationRoutes(pool));
-  api.route("/", createCatalogRoutes(pool));
-  api.route("/", createCohortRoutes(pool));
-  api.route("/", createMeRoutes(pool));
-  api.route("/", createTeacherRoutes(pool));
+  api.route("/", createAuthRoutes(db));
+  api.route("/", createApplicationRoutes(db));
+  api.route("/", createCatalogRoutes(db));
+  api.route("/", createCohortRoutes(db));
+  api.route("/", createMeRoutes(db));
+  api.route("/", createTeacherRoutes(db));
 
   app.route(API_PREFIX, api);
   return app;

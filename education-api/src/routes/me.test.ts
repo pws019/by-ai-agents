@@ -10,7 +10,7 @@ import { hashPassword } from "../auth/password.js";
 import { createSession } from "../auth/session.js";
 import { DATABASE_URL } from "../db/config.js";
 import { migrate } from "../db/migrate.js";
-import { createPool } from "../db/pool.js";
+import { createDb, createPool } from "../db/pool.js";
 
 const migrationsDir = fileURLToPath(new URL("../db/migrations", import.meta.url));
 const dbName = `edu_test_${randomBytes(4).toString("hex")}`;
@@ -24,6 +24,7 @@ const ORIGIN = "http://localhost:5173";
 
 let admin: pg.Client;
 let pool: pg.Pool;
+let db: ReturnType<typeof createDb>;
 let app: ReturnType<typeof createApp>;
 
 // 两个学员，各自一条报名、两节课（一节有回放、一节没有）。用来验证"我的"和"别人的"的边界。
@@ -71,7 +72,7 @@ async function setupStudent(loginName: string): Promise<Omit<Student, "cookie">>
 }
 
 async function loginCookie(userId: string): Promise<string> {
-  const { token } = await createSession(pool, userId);
+  const { token } = await createSession(db, userId);
   return `edu_session=${token}`;
 }
 
@@ -81,6 +82,7 @@ before(async () => {
   await admin.query(`CREATE DATABASE ${dbName}`);
   await migrate(testUrl, migrationsDir);
   pool = createPool(testUrl);
+  db = createDb(pool);
   app = createApp(pool, { allowedOrigin: ORIGIN });
 
   const a = await setupStudent("student.a");
