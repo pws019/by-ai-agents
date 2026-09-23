@@ -673,7 +673,20 @@ describe("POST /teacher/applications/:id/refund-result", () => {
     assert.equal(Number(afterRows[0]!.refunded_cents) - Number(before), 5000);
   });
 
-  test("登记失败：executionStatus=failed，订单金额不变", async () => {
+  test("登记成功：报名的访问权限一并收回，status 变 ended", async () => {
+    const approved = await approvedRefundApplication(5000);
+    const res = await post(
+      `/teacher/applications/${approved.id}/refund-result`,
+      { outcome: "completed", note: "已通过支付宝转账", expectedRevision: approved.revision },
+      teacherCookie,
+    );
+    assert.equal(res.status, 200);
+
+    const { rows } = await pool.query("SELECT status FROM enrollments WHERE id = $1", [approved.enrollmentId]);
+    assert.equal(rows[0]!.status, "ended", "退款到账后不该还是 active，否则还能被记录学习进度");
+  });
+
+  test("登记失败：executionStatus=failed，报名的访问权限不受影响", async () => {
     const approved = await approvedRefundApplication(3000);
     const res = await post(
       `/teacher/applications/${approved.id}/refund-result`,
@@ -685,10 +698,11 @@ describe("POST /teacher/applications/:id/refund-result", () => {
     assert.equal(body.executionStatus, "failed");
 
     const { rows } = await pool.query(
-      "SELECT o.refunded_cents FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
+      "SELECT o.refunded_cents, e.status AS enrollment_status FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
       [approved.enrollmentId],
     );
     assert.equal(Number(rows[0]!.refunded_cents), 0);
+    assert.equal(rows[0]!.enrollment_status, "active", "登记失败不该收回访问权限");
   });
 
   test("重复登记：第二次（用旧 revision）不重复增加 refunded_cents", async () => {

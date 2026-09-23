@@ -873,6 +873,14 @@ export function createApplicationRoutes(db: Db): Hono {
             .where(and(eq(orders.id, enrollment.orderId), sql`${orders.refundedCents} + ${refundCents} <= ${orders.paidCents}`))
             .returning({ id: orders.id });
           if (!orderRow) throw new RefundExceedsBalance();
+
+          // 钱退了，这份报名的访问权限也要一起收回——enrollments.status 不只是展示用的
+          // 标记，teacher.ts 里标记学习进度的权限判断就是靠它（status='active'）。
+          // 不在这里改的话，退费到账后学员还能被当成"在读"记录进度。
+          await tx
+            .update(enrollments)
+            .set({ status: "ended", revision: sql`${enrollments.revision} + 1` })
+            .where(eq(enrollments.id, existing.enrollmentId));
         }
 
         await tx.insert(applicationEvents).values({
