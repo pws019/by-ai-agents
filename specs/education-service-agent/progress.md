@@ -170,7 +170,7 @@
 | L 编号 | 对应 T/AC 实现状态 | 学习状态 | 学习者证据 | 待解决问题/下次练习 |
 |---|---|---|---|---|
 | L-00 | T-04 已实现；spike 已扩展为 ask_reason→draft→confirm→finalize，resume 校验 type | 独立通过（含较多提示，M3 前用等价小案例无提示复现一次） | 题1通过：答出重跑会重复创建、写操作须幂等；已补 Idempotency-Key/写入放 interrupt 之后。题2大体对，已纠正：HTTP 断开不等于任务失败；checkpoint 存图执行状态而非业务事实源。练习证据：拆出 ask_reason 节点；日志 `ask_reason, reason:enter, ask_reason, reason:enter, reason:resumed, draft, confirm:enter`（被中断节点整体重跑，draft 只 1 次）；同一 task id 经 SIGKILL 重启后恢复；`uv run pytest -q` 5 passed；新增类型不匹配 409 测试，经反向验证（临时移除校验则该测试失败 200≠409）。提示说明：变量未赋值、`state["reason"]` KeyError、dict 取属性、next 列表与字符串比较等 bug 由 Claude 看服务端日志定位后提示，学员修复；resume 协议（type+value，方案 B）由学员选择并落地。读代码后三问：①按 thread_id 查 checkpoint、search_path 只选 schema（通过）；②内存存储重启后丢状态（通过，补：重启后 GET 会 404、多 worker 也会失败）；③初答"从中断节点开始跑"，讲明白全文回答后纠正三处：①async 漏了阻塞调用卡事件循环，"服务边界"应答职责边界；②"工具"混入了 LangGraph，应为模型提议、后端执行的函数；③"请求抵达后断开不影响"过于绝对，异步框架下协程可能被取消，是否可恢复取决于状态是否落库（未实测，练习中验证）。此前已纠正为"已完成节点不重跑、被中断节点从第一行整体重跑，interrupt 第二次直接返回 resume 值" | — |
-| L-01 | 待实施 | 未开始 | — | — |
+| L-01 | T-08/T-09/T-10/T-11 已实现 | 部分完成：核心机制（资源授权判断）学员独立手写；"追踪身份到 tools"留到 M3 agent 接入内部认证 | 学员在 T-08 独立手写 `GET /me/enrollments/:id/progress` 的授权判断（先给失败测试+骨架，多轮 review 修正条件取反/SQL 语法/缺过滤/类型标注等问题，见 progress.md T-08 行）；T-09/T-10 复用同一模式；T-07 seed 里 `student.li`/`student.wang` 即是"本人 vs 他人"样例，`education-api` 的 `me.test.ts`/`cohorts.test.ts` 均有"自己的资源 200、别人的资源 404"用例；浏览器端到端验证过学员登录只看到自己的报名。学员能指出前端隐藏按钮不构成保护（`RequireAuth` 组件注释即由此出发）。理解检查题两轮问答已过（T-06 唯一索引 vs 先查后插的竞态、CHECK 不够退款还要锁；T-10 乐观锁的适用边界） | 待 M3：BFF→agent 内部身份签发/校验实现后，补"可信身份如何传到工具"这部分的独立练习 |
 | L-02 | 待实施 | 未开始 | — | — |
 | L-03 | 待实施 | 未开始 | — | — |
 | L-04 | 待实施 | 未开始 | — | — |
