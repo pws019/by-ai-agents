@@ -5,7 +5,8 @@ import type pg from "pg";
 import { requireAuth } from "../auth/middleware.js";
 import { errorJson } from "../http/errors.js";
 
-interface EnrollmentRow {
+// 导出给 teacher.ts 复用：手工登记报名之后返回的形状要和这里的 Enrollment 一致。
+export interface EnrollmentRow {
   id: string;
   status: string;
   revision: number;
@@ -15,7 +16,7 @@ interface EnrollmentRow {
   policy_version: number;
 }
 
-function toEnrollment(row: EnrollmentRow) {
+export function toEnrollment(row: EnrollmentRow) {
   return {
     enrollmentId: row.id,
     cohort: { cohortId: row.cohort_id, name: row.name, startAt: row.start_at },

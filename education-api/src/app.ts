@@ -10,6 +10,7 @@ import { createAuthRoutes } from "./routes/auth.js";
 import { createCatalogRoutes } from "./routes/catalog.js";
 import { createCohortRoutes } from "./routes/cohorts.js";
 import { createMeRoutes } from "./routes/me.js";
+import { createTeacherRoutes } from "./routes/teacher.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -27,6 +28,7 @@ export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string }): Hon
   api.route("/", createCatalogRoutes(pool));
   api.route("/", createCohortRoutes(pool));
   api.route("/", createMeRoutes(pool));
+  api.route("/", createTeacherRoutes(pool));
 
   app.route(API_PREFIX, api);
   return app;

@@ -15,6 +15,7 @@
 | T-07 合成 seed | 完成 | `data/education/seed/seed-data.json`（5 users、1 policy、2 courses、3 course_versions、4 cohorts、8 lessons、3 orders、3 enrollments、6 learning_progress，id 固定为 `00000000-…-0000000000xx`，姓名/课程名均带"（合成数据）"后缀，`orders.source='seed'`）。`npm run seed --workspace=education-api` 幂等写入真实开发库；重复执行后 `select count(*) from app.users`/`app.orders` 行数不变（5/3），验证未产生重复行。覆盖：历史/当前/预告三种班期状态、同课程两个版本、全款与部分退款订单、三种学习进度状态 |
 | T-08 登录/session/资源授权（内部服务认证延后见下） | 完成（本轮范围） | `education-api/src/auth/`（password.ts、session.ts、middleware.ts）+ `src/routes/auth.ts`、`src/routes/me.ts` + `src/app.ts`。`npm test --workspace=education-api`：28 passed，含 password 哈希、登录/会话集成测试、`GET /me/enrollments/:id/progress` 资源级授权（真实临时库 + `app.request()`，非 mock）。反向验证：临时去掉 `/me` 的 `requireAuth` → 从 401 变 500；临时注掉 CSRF 中间件 → 从 403 变 200；临时去掉 progress 查询里的 `student_id` 过滤 → 4 个用例**仍然全绿**（测试夹具里学员各自独立班期，没有共享课次，这个漏洞不在当前用例覆盖范围内，靠代码审查而非测试发现）；均恢复后全绿。真实开发服务器实测（`npm start` 起 8400，真实 T-07 种子账号 `student.chen`）：登录 200 并 Set-Cookie、`/me` 200、无 cookie 401、logout 204 后旧 cookie 401。L-01 资源授权练习由学员手写实现（先给失败测试+骨架+TODO，学员实现，经 3 轮 review：条件取反、SQL 语法错误/表名错误/缺 `student_id` 过滤、箭头函数对象字面量少括号、`any` 换成精确类型，含一处 boolean/string 类型标注错误）。**未开始**：BFF→agent 内部身份签发与校验——当前没有 agent 侧消费方，留到 M3 agent 真正需要调用这些 API 时再实现，避免为不存在的调用方设计协议 |
 | T-09 只读业务 API | 完成 | `education-api/src/routes/`（catalog.ts、me.ts 新增两个端点、cohorts.ts）。`npm test --workspace=education-api`：40 passed。反向验证：`schedule`/`transfer-targets` 各去掉一次 `student_id`/`e.student_id` 过滤 → 对应用例从 404 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`GET /catalog/current` 返回 AI 训练营当前班（含课程标题、v2、价格）；`student.li` 登录后 `/me/enrollments` 返回其唯一报名；`/schedule` 三节课按 position 排序、`hasReplay` 与种子数据一致；`/progress` 只返回真实录入的两条记录；`/cohorts/transfer-targets` 只返回预告班（upcoming）；用 `student.li` 的 cookie 访问 `student.wang` 的报名 id 全部 404 |
+| T-10 老师维护/导入 API | 完成 | 先补 `contracts/education/openapi.yaml`（6 端点 + 8 schema，`redocly lint` 0 error、`validate.mjs` 全 PASS），再实现 `education-api/src/routes/teacher.ts`。`npm test --workspace=education-api`：52 passed（含角色权限、courseVersion 归属校验、cohort/lesson 唯一约束冲突转 422、手工报名生成 `source=manual` 订单、进度导入部分成功）。反向验证：临时去掉 `requireRole("teacher")` → 学员访问 403 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`teacher.alice` 能创建课次、`student.chen` 同样请求 403；批量导入进度时未报名的学员被拒绝、已报名的正常写入且 `source` 正确记为 `import`。测试产生的数据（临时课次、被改动的进度状态）已用 `npm run seed` 和手工 DELETE 清理，dev 库行数与 T-07 文档一致（users=5/orders=3/enrollments=3/lessons=8） |
 
 ## 2. T-01 基线盘点
 
@@ -109,6 +110,15 @@
 | `/cohorts/transfer-targets` 候选规则：同课程、未结束（upcoming/running）、排除当前班期 | 契约只说"已建立的可展示目标；不承诺批准"，没给具体规则；这是一个业务假设，真正的转班资格判断在 M2 老师审批时做（T-14），这里只负责"有哪些班期可以选" |
 | price_cents 等 bigint 字段在路由里显式 `Number()` 转换 | pg 驱动把 bigint 序列化成字符串防止精度丢失；不转换会让响应里的数字变成字符串，与 OpenAPI 的 `integer` 类型不符 |
 | schedule/progress/transfer-targets 三个端点都复用"把 actor.id/student_id 放进 WHERE、不存在与非本人统一 404"这个模式 | 和 T-08 练习里学员写的 `progress` 端点保持同一套判断方式，避免同一类授权逻辑在不同端点用不同写法、增加以后审查的心智负担 |
+
+### T-10 设计决定
+| 决定 | 理由 |
+|---|---|
+| 先补 `contracts/education/openapi.yaml`（T-02 漏掉的 6 个老师维护端点），再实现 | 项目一直是契约先行；design.md 只有文字提及，没进正式契约就直接实现，等于绕开了 T-02 建立的 lint/validate 校验 |
+| cohorts/lessons 的更新端点不带 `expectedRevision`（不像 applications 那样有乐观锁） | applications 需要防"两个老师同时批准同一份申请"这种真实并发冲突；cohorts/lessons 教学场景下是老师单人日常维护，冲突概率低，加乐观锁是为不存在的并发场景加复杂度 |
+| 唯一约束冲突（`is_current_sale` 重复、`(cohort_id, position)` 重复）统一转成 422 而不是把 Postgres 报错原样抛出 | 调用方看到的应该是"这个操作为什么不行"的业务语义，不是数据库内部的约束名；但校验逻辑仍然由数据库的唯一索引兜底，路由这层只是把结果翻译成契约里定义的错误形状 |
+| `/teacher/enrollments` 手工创建报名时，订单固定 `source='manual'` | 复用 T-06 迁移时就定义好的 `orders.source` 取值（`seed`/`manual`），线上支付走的订单流程不在 T-10 范围内，这里只覆盖"老师帮学员线下登记"这一种场景 |
+| `/teacher/progress/import` 逐条校验、部分成功（`applied`/`rejected` 分开报告），不是整批失败 | 契约里已经这么定义（T-10 第一步补契约时决定的）；实现上对应"一条学员没有在该班期报名"这类校验失败不影响其它合法条目写入，靠 `enrollments.status='active'` 兜底"这条进度记录到底该不该存在"，不是凭 studentId 字符串就无中生有建记录 |
 
 ### T-05 设计决定
 | 决定 | 理由 |
