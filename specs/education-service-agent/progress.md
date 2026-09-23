@@ -1,6 +1,6 @@
 # 进度记录
 
-更新：2026-09-20。当前里程碑：**M1（业务事实与身份）**。
+更新：2026-09-23。M1（业务事实与身份，T-06～T-11）全部完成，验收证据见下表。当前里程碑：**M2（申请闭环，先不用模型）**。
 
 ## 1. 任务状态与验证证据
 
@@ -16,6 +16,7 @@
 | T-08 登录/session/资源授权（内部服务认证延后见下） | 完成（本轮范围） | `education-api/src/auth/`（password.ts、session.ts、middleware.ts）+ `src/routes/auth.ts`、`src/routes/me.ts` + `src/app.ts`。`npm test --workspace=education-api`：28 passed，含 password 哈希、登录/会话集成测试、`GET /me/enrollments/:id/progress` 资源级授权（真实临时库 + `app.request()`，非 mock）。反向验证：临时去掉 `/me` 的 `requireAuth` → 从 401 变 500；临时注掉 CSRF 中间件 → 从 403 变 200；临时去掉 progress 查询里的 `student_id` 过滤 → 4 个用例**仍然全绿**（测试夹具里学员各自独立班期，没有共享课次，这个漏洞不在当前用例覆盖范围内，靠代码审查而非测试发现）；均恢复后全绿。真实开发服务器实测（`npm start` 起 8400，真实 T-07 种子账号 `student.chen`）：登录 200 并 Set-Cookie、`/me` 200、无 cookie 401、logout 204 后旧 cookie 401。L-01 资源授权练习由学员手写实现（先给失败测试+骨架+TODO，学员实现，经 3 轮 review：条件取反、SQL 语法错误/表名错误/缺 `student_id` 过滤、箭头函数对象字面量少括号、`any` 换成精确类型，含一处 boolean/string 类型标注错误）。**未开始**：BFF→agent 内部身份签发与校验——当前没有 agent 侧消费方，留到 M3 agent 真正需要调用这些 API 时再实现，避免为不存在的调用方设计协议 |
 | T-09 只读业务 API | 完成 | `education-api/src/routes/`（catalog.ts、me.ts 新增两个端点、cohorts.ts）。`npm test --workspace=education-api`：40 passed。反向验证：`schedule`/`transfer-targets` 各去掉一次 `student_id`/`e.student_id` 过滤 → 对应用例从 404 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`GET /catalog/current` 返回 AI 训练营当前班（含课程标题、v2、价格）；`student.li` 登录后 `/me/enrollments` 返回其唯一报名；`/schedule` 三节课按 position 排序、`hasReplay` 与种子数据一致；`/progress` 只返回真实录入的两条记录；`/cohorts/transfer-targets` 只返回预告班（upcoming）；用 `student.li` 的 cookie 访问 `student.wang` 的报名 id 全部 404 |
 | T-10 老师维护/导入 API | 完成 | 先补 `contracts/education/openapi.yaml`（6 端点 + 8 schema，`redocly lint` 0 error、`validate.mjs` 全 PASS），再实现 `education-api/src/routes/teacher.ts`。`npm test --workspace=education-api`：52 passed（含角色权限、courseVersion 归属校验、cohort/lesson 唯一约束冲突转 422、手工报名生成 `source=manual` 订单、进度导入部分成功）。反向验证：临时去掉 `requireRole("teacher")` → 学员访问 403 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`teacher.alice` 能创建课次、`student.chen` 同样请求 403；批量导入进度时未报名的学员被拒绝、已报名的正常写入且 `source` 正确记为 `import`。测试产生的数据（临时课次、被改动的进度状态）已用 `npm run seed` 和手工 DELETE 清理，dev 库行数与 T-07 文档一致（users=5/orders=3/enrollments=3/lessons=8） |
+| T-11 前端登录/角色路由/我的学习页 | 完成 | `customer-frontend/src/education/`（api.ts、AuthContext.tsx、RequireAuth.tsx、LoginPage.tsx、MyLearningPage.tsx、TeacherPlaceholderPage.tsx、EducationLayout.tsx）+ `vite.config.ts` 加 `/api` → 8400 的开发代理（浏览器视角同源，cookie 自动带，不用搭 CORS）+ `router.tsx` 新增 `/login`、`/my-learning`、`/teacher` 三条路由，legacy 聊天路由树原样保留。`tsc -b --noEmit` 通过。真实浏览器（chrome-devtools MCP）端到端验证：`student.chen` 登录后 `/my-learning` 显示的班期名、课次、进度状态与 T-07 种子数据逐字段一致；硬刷新后登录状态不丢（cookie-based）；退出登录后 `RequireAuth` 响应式跳回 `/login`（不是只在首次加载判断一次）；直接访问 `/my-learning` 不带 session 会被拦到 `/login`；legacy `/` 路由渲染不受影响（原有"mastra dev 未启动"的错误提示照常出现，证明改动没有波及 legacy 代码路径）。**测试中发现并修复一个真实 bug**：登录成功后的跳转原本写死 `/my-learning`，老师账号登录会先跳错页面再被 `RequireAuth` 拦下显示"无权限"，不是真的角色路由；改成 `AuthContext.login()` 返回 `CurrentUser`，由 `LoginPage` 按 `role` 决定目的地，修复后用真实老师账号重新登录验证过。未做自动化前端测试（customer-frontend 目前没有测试框架），验证手段是浏览器手动走查，记为已知覆盖缺口 |
 
 ## 2. T-01 基线盘点
 
@@ -119,6 +120,16 @@
 | 唯一约束冲突（`is_current_sale` 重复、`(cohort_id, position)` 重复）统一转成 422 而不是把 Postgres 报错原样抛出 | 调用方看到的应该是"这个操作为什么不行"的业务语义，不是数据库内部的约束名；但校验逻辑仍然由数据库的唯一索引兜底，路由这层只是把结果翻译成契约里定义的错误形状 |
 | `/teacher/enrollments` 手工创建报名时，订单固定 `source='manual'` | 复用 T-06 迁移时就定义好的 `orders.source` 取值（`seed`/`manual`），线上支付走的订单流程不在 T-10 范围内，这里只覆盖"老师帮学员线下登记"这一种场景 |
 | `/teacher/progress/import` 逐条校验、部分成功（`applied`/`rejected` 分开报告），不是整批失败 | 契约里已经这么定义（T-10 第一步补契约时决定的）；实现上对应"一条学员没有在该班期报名"这类校验失败不影响其它合法条目写入，靠 `enrollments.status='active'` 兜底"这条进度记录到底该不该存在"，不是凭 studentId 字符串就无中生有建记录 |
+
+### T-11 设计决定
+| 决定 | 理由 |
+|---|---|
+| 新建 `customer-frontend/src/education/` 独立子树，不把登录/学习页混进现有 `src/components`、`src/routes` | 和仓库顶层的分区惯例一致（`education-api`、`education-agent`、`contracts/education` 都是独立新增目录，不改 legacy 模块）；这套页面用的是完全不同的后端（education-api）和身份模型（session cookie vs Mastra client），混进 legacy 目录只会增加以后读代码时"这段是给谁用的"的辨认成本 |
+| `<AuthProvider>` 只包在新增的教育路由外层，不包住整棵路由树 | 包全局的话，`dev:legacy` 模式（不起 education-api）下 legacy 页面加载也会发一个注定 401/连接失败的 `GET /me`，属于给不消费这个数据的页面强加副作用 |
+| 用 Vite dev server 的 `/api` 代理转发到 education-api（8400），不在前端配 CORS | 浏览器眼里请求和页面同源，session cookie 自动带上；这也更贴近生产部署的真实拓扑（BFF 和前端同源，不是两个独立源靠 CORS 拼起来），dev 环境没必要搭一套生产不会有的跨源机制 |
+| 登录成功后按返回的 `role` 分流到 `/my-learning`（学员）或 `/teacher`（老师占位页），不是写死一个目的地 | 这是"角色路由"这个验收点本身要求的行为；开发过程中先写死过 `/my-learning`，用老师账号实测时发现登录后被 `RequireAuth` 拦下显示"无权限"，才发现并改掉——记在上面的验证记录里 |
+| `RequireAuth` 不做资源级判断，只判断"登录了没有"和"角色对不对" | 真正的数据授权（"这条报名是不是我的"）已经在 education-api 那层用 `WHERE student_id = $1` 做过了；前端这道判断只是不让 UI 卡在一个它拿不到数据的页面上，重复实现一遍授权逻辑没有必要，还容易和后端judge出来的结果不一致 |
+| 没有引入前端测试框架，验证靠 chrome-devtools MCP 手动走查真实浏览器行为 | customer-frontend 目前没有测试基建（无 vitest/testing-library），为这一个任务引入一整套前端测试框架不成比例；手动走查覆盖了登录、刷新保活、登出跳转、角色路由这几个关键路径，已知缺口是没有自动化回归，留在后续任务视需要再补 |
 
 ### T-05 设计决定
 | 决定 | 理由 |

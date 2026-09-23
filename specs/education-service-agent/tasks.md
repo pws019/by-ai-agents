@@ -23,7 +23,7 @@
 - [ ] T-08（3h）登录/session/角色/资源授权、内部服务认证。`education-api/src/auth/`、`education-agent/src/auth/`。验收：AC-002/003 的账户与 API 部分通过。登录/session/资源授权已完成（见 progress.md）；内部服务认证（`education-agent/src/auth/`）延后到 M3 agent 需要调用业务 API 时再做，不勾选整项
 - [x] T-09（3h）实现当期、报名、课表、进度、转入目标只读 API。`education-api/src/routes/`。验收：未知事实返回 null/unknown；AC-001 业务查询通过。
 - [x] T-10（2h）老师基础维护/导入 API：班期、报名、课次、进度。`education-api/src/routes/teacher.ts`（单文件，未按原计划开 `teacher/` 目录，规模还不到需要拆分的程度）。验收：输入验证和老师权限通过。
-- [ ] T-11（2h）前端登录、角色路由、我的学习基础页。`customer-frontend/src/`。验收：学生只看到本人记录，刷新身份保持。
+- [x] T-11（2h）前端登录、角色路由、我的学习基础页。`customer-frontend/src/education/`。验收：学生只看到本人记录，刷新身份保持。
 
 阶段门槛：模型尚未接入也能通过页面/API 查询正确业务事实。讲解 course/version/cohort 与认证/授权。
 
