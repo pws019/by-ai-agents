@@ -32,7 +32,21 @@ let otherStudentCookie: string;
 let studentId: string;
 let cohortId: string;
 let otherCohortId: string;
+let policyId: string;
 let enrollmentId: string;
+
+/** 独立的一条报名：申请每个 enrollment+type 只允许一张未结束的，需要相互隔离状态的用例各开一条。 */
+async function createFreshEnrollment(): Promise<string> {
+  const orderId = await id(
+    "INSERT INTO orders (student_id, cohort_id, policy_id, paid_cents, source) VALUES ($1,$2,$3,88800,'seed') RETURNING id",
+    [studentId, cohortId, policyId],
+  );
+  return id("INSERT INTO enrollments (student_id, order_id, cohort_id, status) VALUES ($1,$2,$3,'active') RETURNING id", [
+    studentId,
+    orderId,
+    cohortId,
+  ]);
+}
 
 before(async () => {
   admin = new pg.Client({ connectionString: withDb("postgres") });
@@ -65,7 +79,7 @@ before(async () => {
     "INSERT INTO cohorts (course_id, course_version_id, name, currency, status) VALUES ($1,$2,'班期2','CNY','upcoming') RETURNING id",
     [courseId, versionId],
   );
-  const policyId = await id("INSERT INTO policies (version, text) VALUES (1,'政策') RETURNING id");
+  policyId = await id("INSERT INTO policies (version, text) VALUES (1,'政策') RETURNING id");
   const orderId = await id(
     "INSERT INTO orders (student_id, cohort_id, policy_id, paid_cents, source) VALUES ($1,$2,$3,88800,'seed') RETURNING id",
     [studentId, cohortId, policyId],
@@ -133,9 +147,10 @@ describe("POST /applications/drafts", () => {
 
 describe("PATCH /applications/:id/draft", () => {
   async function createDraft() {
+    const freshEnrollmentId = await createFreshEnrollment();
     const res = await post(
       "/applications/drafts",
-      { type: "transfer", enrollmentId, reason: "初始理由", targetCohortId: null },
+      { type: "transfer", enrollmentId: freshEnrollmentId, reason: "初始理由", targetCohortId: null },
       studentCookie,
     );
     return res.json();
@@ -205,9 +220,30 @@ describe("GET /me/applications、GET /applications/:id", () => {
 // ---------------------------------------------------------------------------
 describe("POST /applications/:id/confirm", () => {
   async function createDraft(type: "transfer" | "refund" = "transfer") {
-    const res = await post("/applications/drafts", { type, enrollmentId, reason: "待确认" }, studentCookie);
+    const freshEnrollmentId = await createFreshEnrollment();
+    const res = await post("/applications/drafts", { type, enrollmentId: freshEnrollmentId, reason: "待确认" }, studentCookie);
     return res.json();
   }
+
+  test("真并发：两个请求同时用同一张确认卡确认，恰好一个成功", async () => {
+    const draft = await createDraft();
+    const payload = { confirmationId: draft.confirmation.confirmationId, expectedRevision: draft.revision };
+
+    const [a, b] = await Promise.all([
+      post(`/applications/${draft.id}/confirm`, payload, studentCookie),
+      post(`/applications/${draft.id}/confirm`, payload, studentCookie),
+    ]);
+    // 两个请求谁先跑到谁后跑到是调度决定的，不保证是"一个 200 一个 409"（后到的那个如果晚到
+    // 已经能读到别人提交完的状态，走的是合法的幂等重放分支，也是 200）——两个都是 200 或 409
+    // 都算正常；真正决定性的是下面这条：不管状态码组合是什么，"确认"这个业务动作只能真的执行一次。
+    for (const status of [a.status, b.status]) assert.ok(status === 200 || status === 409, `意外状态码 ${status}`);
+
+    const { rows } = await pool.query(
+      "SELECT count(*)::int AS n FROM application_events WHERE application_id = $1 AND event_type = 'submitted'",
+      [draft.id],
+    );
+    assert.equal(rows[0]!.n, 1, "只应该有一条 submitted 审计事件，不能两个请求都执行了业务逻辑");
+  });
 
   test("正常确认：状态变为 submitted，并写入一条 submitted 审计事件", async () => {
     const draft = await createDraft();

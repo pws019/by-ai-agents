@@ -1,11 +1,12 @@
 // 申请草稿/摘要/版本/确认 API。契约见 contracts/education/openapi.yaml 的 /applications/* 与 /me/applications。
 // 状态机：draft →(confirm)→ submitted →(老师 request-info/propose/approve/reject)→ ...；
 // draft 阶段可以反复 PATCH，每次编辑都让旧确认卡失效——这是 AC-005 的来源。
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import type pg from "pg";
 import { requireAuth } from "../auth/middleware.js";
 import { errorJson } from "../http/errors.js";
+import { claimIdempotencyKey, fulfillIdempotencyKey } from "../idempotency.js";
 
 const UNIQUE_VIOLATION = "23505";
 const isUniqueViolation = (err: unknown): boolean => (err as { code?: string })?.code === UNIQUE_VIOLATION;
@@ -245,8 +246,103 @@ export function createApplicationRoutes(pool: pg.Pool): Hono {
   //      (actor, "confirmApplication", key) 重试且请求体一致，不要重复执行业务逻辑，
   //      直接返回当前 applicationId 对应的最新状态。
   app.post("/applications/:applicationId/confirm", async (c) => {
-    // TODO(student): 在这里实现。删除下面这一行占位返回。
-    return errorJson(c, 501, "INTERNAL", "POST /applications/:applicationId/confirm 待实现");
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId");
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.confirmationId !== "string" || !Number.isInteger(body.expectedRevision)) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "confirmationId/expectedRevision 必填");
+    }
+    const idempotencyKey = c.req.header("Idempotency-Key");
+
+    const { rows: existingRows } = await pool.query<ApplicationRow>(
+      `SELECT ${APPLICATION_COLUMNS} FROM applications WHERE id = $1 AND student_id = $2`,
+      [applicationId, actor.id],
+    );
+    const application = existingRows[0];
+    if (!application) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+
+    // Idempotency-Key 重放：只有确认过"上一次真的成功过"（result_id 有值）才直接回读结果，
+    // 否则（第一次见到这个 key，或者上一次失败了没留下 result_id）都要走一遍下面的正常逻辑——
+    // 不能因为 key 重复出现就假装上次成功了，那样会把一次真实的失败悄悄变成假的成功。
+    if (idempotencyKey) {
+      const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+      const claim = await claimIdempotencyKey(pool, actor.id, "confirmApplication", idempotencyKey, requestHash);
+      if (claim.kind === "conflict") {
+        return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
+      }
+      if (claim.kind === "replay" && claim.resultId) {
+        const { rows } = await pool.query<ApplicationRow>(`SELECT ${APPLICATION_COLUMNS} FROM applications WHERE id = $1`, [
+          claim.resultId,
+        ]);
+        return c.json(toApplication(rows[0]!));
+      }
+    }
+
+    // 同一张确认卡已经把这张申请确认过了（网络重试/手抖点两次）：当成幂等重放，
+    // 返回当前状态而不是报错——这一步不依赖 Idempotency-Key 头，只看确认卡本身是否已用于这张申请。
+    if (application.status === "submitted") {
+      const { rows: usedRows } = await pool.query(
+        `SELECT 1 FROM confirmations WHERE id = $1 AND application_id = $2 AND used_at IS NOT NULL`,
+        [body.confirmationId, applicationId],
+      );
+      if (usedRows.length > 0) {
+        if (idempotencyKey) await fulfillIdempotencyKey(pool, actor.id, "confirmApplication", idempotencyKey, applicationId);
+        return c.json(toApplication(application));
+      }
+    }
+    if (application.status !== "draft") {
+      return errorJson(c, 409, "INVALID_STATE", "只有草稿状态的申请可以确认");
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 把"确认卡还没被用过"和"标记为已用"合并进同一条 UPDATE：两个并发请求同时到达，
+      // 数据库保证只有一个能把 rowCount 改成 1，另一个原子地拿到 0——不是先 SELECT 判断再 UPDATE。
+      const claim = await client.query<{ revision: number }>(
+        `UPDATE confirmations SET used_at = now()
+         WHERE id = $1 AND application_id = $2 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+         RETURNING revision`,
+        [body.confirmationId, applicationId],
+      );
+      if (claim.rowCount === 0 || claim.rows[0]!.revision !== body.expectedRevision) {
+        await client.query("ROLLBACK");
+        return errorJson(c, 409, "STALE_CONFIRMATION", "确认卡已失效，请查看最新摘要后重新确认");
+      }
+      const revision = claim.rows[0]!.revision;
+
+      // 同理，revision 校验也写进这条 UPDATE 的 WHERE，不是先查再判断——两者是同一个 TOCTOU 坑。
+      const updated = await client.query<ApplicationRow>(
+        `UPDATE applications SET status = 'submitted', confirmed_revision = $2
+         WHERE id = $1 AND revision = $2 AND status = 'draft'
+         RETURNING ${APPLICATION_COLUMNS}`,
+        [applicationId, revision],
+      );
+      if (updated.rowCount === 0) {
+        // 确认卡合法但申请状态/版本对不上，理论上不该发生（PATCH 会连带撤销旧确认卡）；
+        // 出现说明前面哪个假设被打破了。ROLLBACK 会把上面刚 claim 的确认卡也一并撤销，
+        // 不会出现"确认卡被烧掉但什么都没发生"的半成品状态。
+        await client.query("ROLLBACK");
+        return errorJson(c, 409, "STALE_CONFIRMATION", "确认卡已失效，请查看最新摘要后重新确认");
+      }
+
+      await client.query(
+        `INSERT INTO application_events (application_id, actor_id, event_type, revision, details)
+         VALUES ($1,$2,'submitted',$3,'{}')`,
+        [applicationId, actor.id, revision],
+      );
+
+      await client.query("COMMIT");
+
+      if (idempotencyKey) await fulfillIdempotencyKey(pool, actor.id, "confirmApplication", idempotencyKey, applicationId);
+      return c.json(toApplication(updated.rows[0]!));
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 
   app.get("/me/applications", async (c) => {
