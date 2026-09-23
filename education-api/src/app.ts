@@ -6,6 +6,7 @@ import type pg from "pg";
 import { withActor } from "./auth/middleware.js";
 import { withRequestId } from "./http/request-id.js";
 import { requireSameOrigin } from "./http/same-origin.js";
+import { createApplicationRoutes } from "./routes/applications.js";
 import { createAuthRoutes } from "./routes/auth.js";
 import { createCatalogRoutes } from "./routes/catalog.js";
 import { createCohortRoutes } from "./routes/cohorts.js";
@@ -25,6 +26,7 @@ export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string }): Hon
   api.use(withActor(pool));
   api.use(requireSameOrigin(allowedOrigin));
   api.route("/", createAuthRoutes(pool));
+  api.route("/", createApplicationRoutes(pool));
   api.route("/", createCatalogRoutes(pool));
   api.route("/", createCohortRoutes(pool));
   api.route("/", createMeRoutes(pool));
