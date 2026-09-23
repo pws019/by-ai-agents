@@ -188,19 +188,25 @@ export function createApplicationRoutes(db: Db): Hono {
     }
 
     try {
-      const [row] = await db
-        .insert(applications)
-        .values({
-          studentId: actor.id,
-          enrollmentId: body.enrollmentId,
-          type: body.type,
-          reason: body.reason,
-          targetCohortId: body.targetCohortId ?? null,
-          status: "draft",
-        })
-        .returning();
-      const confirmation = await issueConfirmation(db, actor.id, row!);
-      return c.json(toApplicationDraft(row!, confirmation), 201);
+      // insert 和签发确认卡包进同一个事务：如果确认卡那条 INSERT 恰好失败（比如连接中断），
+      // 不能留下一张"已经存在但没有任何确认卡"的申请——那样学员连 PATCH 都摸不到入口去补救
+      // （PATCH 要求 body 至少带一个要改的字段，光靠它触发不了"没卡就补一张"的逻辑）。
+      const { row, confirmation } = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(applications)
+          .values({
+            studentId: actor.id,
+            enrollmentId: body.enrollmentId,
+            type: body.type,
+            reason: body.reason,
+            targetCohortId: body.targetCohortId ?? null,
+            status: "draft",
+          })
+          .returning();
+        const confirmation = await issueConfirmation(tx, actor.id, row!);
+        return { row: row!, confirmation };
+      });
+      return c.json(toApplicationDraft(row, confirmation), 201);
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
       const [existing] = await db
@@ -260,20 +266,26 @@ export function createApplicationRoutes(db: Db): Hono {
       if (fields[key] === undefined) delete fields[key];
     }
 
-    // WHERE 里带 revision = expectedRevision：判断和更新在同一条 SQL 里原子完成，不是先查 revision
-    // 再单独 UPDATE——否则两个并发 PATCH 会都读到旧 revision、都以为自己能改，其中一个的修改会被悄悄覆盖。
-    const [updated] = await db
-      .update(applications)
-      .set({ ...fields, revision: sql`${applications.revision} + 1` })
-      .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision)))
-      .returning();
-    if (!updated) {
+    // 更新内容、撤销旧卡、签发新卡包进同一个事务：这三步只要中间一步失败就整体回滚，不会出现
+    // "旧卡撤销了、新卡却没发出来"（比撤销前更糟——学员连旧卡都不能用了）这种半成品。
+    const result = await db.transaction(async (tx) => {
+      // WHERE 里带 revision = expectedRevision：判断和更新在同一条 SQL 里原子完成，不是先查
+      // revision 再单独 UPDATE——否则两个并发 PATCH 会都读到旧 revision、都以为自己能改。
+      const [updated] = await tx
+        .update(applications)
+        .set({ ...fields, revision: sql`${applications.revision} + 1` })
+        .where(and(eq(applications.id, applicationId), eq(applications.revision, body.expectedRevision)))
+        .returning();
+      if (!updated) return null;
+
+      await revokeActiveConfirmation(tx, applicationId);
+      const confirmation = await issueConfirmation(tx, actor.id, updated);
+      return { updated, confirmation };
+    });
+    if (!result) {
       return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
     }
-
-    await revokeActiveConfirmation(db, applicationId);
-    const confirmation = await issueConfirmation(db, actor.id, updated);
-    return c.json(toApplicationDraft(updated, confirmation));
+    return c.json(toApplicationDraft(result.updated, result.confirmation));
   });
 
   // POST /applications/:id/confirm —— 契约：confirmationId,expectedRevision → submitted。
@@ -610,7 +622,10 @@ export function createApplicationRoutes(db: Db): Hono {
       proposal = { refundCents: body.refundCents };
     }
 
-    const updated = await db.transaction(async (tx) => {
+    // 转态、写审计事件、签发确认卡都包进同一个事务：确认卡是这次提议成立的必要条件
+    // ——如果发卡失败，申请却已经停在 awaiting_student_confirmation 且没有任何卡能消费，
+    // 学员会卡在原地没法回应（不像草稿阶段还能靠 PATCH 补救）。
+    const result = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(applications)
         .set({ status: "awaiting_student_confirmation", proposal, revision: sql`${applications.revision} + 1` })
@@ -624,12 +639,12 @@ export function createApplicationRoutes(db: Db): Hono {
         revision: row.revision,
         details: { reason: body.reason, proposal },
       });
-      return row;
+      const confirmation = await issueConfirmation(tx, existing.studentId, row);
+      return { row, confirmation };
     });
-    if (!updated) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
+    if (!result) return errorJson(c, 409, "REVISION_CONFLICT", "申请已被修改，请获取最新版本后重试");
 
-    const confirmation = await issueConfirmation(db, existing.studentId, updated);
-    return c.json({ ...toApplication(updated, confirmation) });
+    return c.json({ ...toApplication(result.row, result.confirmation) });
   });
 
   // POST /teacher/applications/:id/reject —— 终态拒绝整张申请（不是拒绝某个方案，那是

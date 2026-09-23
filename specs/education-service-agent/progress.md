@@ -137,6 +137,7 @@
 | `propose` 签发的新确认卡，`user_id` 记的是学员（`application.studentId`），不是发起请求的老师 | `confirmations.user_id` 只是审计字段（真正的权限判断在 applications 行的 `student_id`），但语义上这张卡是签给"要做决定的人"，老师只是触发了签发动作，混淆了以后审计时会让人误以为是老师自己在确认自己提的方案 |
 | `summaryOf` 的 `targetCohortId` 优先取 `proposal.targetCohortId`，草稿原始的 `target_cohort_id` 只在没有方案时兜底 | propose 之后学员看到的确认卡摘要必须是"老师这次提议的目标"，不是学员当初创建草稿时的旧值（大多数场景下就是 null，因为 AC-007 本来就允许创建时不知道目标）——两个字段各显示各的会让确认卡文不对题 |
 | `POST /teacher/applications/:id/reject`（终态拒绝整张申请）划进 T-13，不留到 T-14/15 | reject 没有执行副作用（不涉及转班事务或退款登记），跟 supplement/withdraw 这类"纯状态转换"是同一类复杂度；T-14/15 留给真正需要事务+权益变更的 approve/refund-result，任务边界按"要不要执行动作"分更清楚，不是按契约里端点出现的先后顺序生搬硬套 |
+| `drafts` 创建、`PATCH draft`、`propose` 三处"写完申请再单独调用 issueConfirmation/revokeActiveConfirmation"补包进同一个事务 | 学员追问"是不是所有多步相关写操作都要加事务"时发现的真实缺口：签发确认卡那条 INSERT 若单独失败，会留下一个没有任何确认卡的申请——`drafts` 还能靠后续 PATCH 补救，`propose` 完全没有补救路径，学员会卡死在 `awaiting_student_confirmation`。反向验证：临时在 `drafts` 事务里于 insert 之后、issueConfirmation 之前抛错，确认 `applications` 表行数没有变化（整个事务回滚），恢复后测试全绿 |
 
 ### T-09 设计决定
 | 决定 | 理由 |
