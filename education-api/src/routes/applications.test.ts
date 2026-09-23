@@ -621,3 +621,140 @@ describe("POST /teacher/applications/:id/approve", () => {
     assert.equal(rows[0]!.n, 1, "转班历史只能有一条，不能两个请求都执行了转班");
   });
 });
+
+describe("POST /teacher/applications/:id/refund-result", () => {
+  /** 走完 submit → propose(refundCents) → 学员 accept → approve(pending)，返回批准后的退费申请。 */
+  async function approvedRefundApplication(refundCents: number) {
+    const app1 = await submitApplication("refund", "申请退费");
+    const proposeRes = await post(
+      `/teacher/applications/${app1.id}/propose`,
+      { refundCents, reason: "同意退款", expectedRevision: app1.revision },
+      teacherCookie,
+    );
+    const proposed = await proposeRes.json();
+    const acceptRes = await post(
+      `/applications/${app1.id}/proposal-response`,
+      { accept: true, confirmationId: proposed.pendingConfirmation.confirmationId, expectedRevision: proposed.revision },
+      studentCookie,
+    );
+    const accepted = await acceptRes.json();
+    const approveRes = await post(`/teacher/applications/${app1.id}/approve`, { expectedRevision: accepted.revision }, teacherCookie);
+    const approved = await approveRes.json();
+    return { ...approved, enrollmentId: app1.enrollmentId };
+  }
+
+  test("AC-009：批准之后还没登记，executionStatus 停在 pending，不能说已到账", async () => {
+    const approved = await approvedRefundApplication(5000);
+    assert.equal(approved.status, "approved");
+    assert.equal(approved.executionStatus, "pending");
+  });
+
+  test("登记成功：executionStatus=completed，订单的 refunded_cents 真的加了这笔钱", async () => {
+    const approved = await approvedRefundApplication(5000);
+    const { rows: beforeRows } = await pool.query(
+      "SELECT o.refunded_cents FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
+      [approved.enrollmentId],
+    );
+    const before = beforeRows[0]!.refunded_cents;
+
+    const res = await post(
+      `/teacher/applications/${approved.id}/refund-result`,
+      { outcome: "completed", note: "已通过支付宝转账", expectedRevision: approved.revision },
+      teacherCookie,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.executionStatus, "completed");
+
+    const { rows: afterRows } = await pool.query(
+      "SELECT o.refunded_cents FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
+      [approved.enrollmentId],
+    );
+    assert.equal(Number(afterRows[0]!.refunded_cents) - Number(before), 5000);
+  });
+
+  test("登记失败：executionStatus=failed，订单金额不变", async () => {
+    const approved = await approvedRefundApplication(3000);
+    const res = await post(
+      `/teacher/applications/${approved.id}/refund-result`,
+      { outcome: "failed", note: "银行卡信息有误", expectedRevision: approved.revision },
+      teacherCookie,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.executionStatus, "failed");
+
+    const { rows } = await pool.query(
+      "SELECT o.refunded_cents FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
+      [approved.enrollmentId],
+    );
+    assert.equal(Number(rows[0]!.refunded_cents), 0);
+  });
+
+  test("重复登记：第二次（用旧 revision）不重复增加 refunded_cents", async () => {
+    const approved = await approvedRefundApplication(4000);
+    const first = await post(
+      `/teacher/applications/${approved.id}/refund-result`,
+      { outcome: "completed", note: "第一次登记", expectedRevision: approved.revision },
+      teacherCookie,
+    );
+    assert.equal(first.status, 200);
+
+    const second = await post(
+      `/teacher/applications/${approved.id}/refund-result`,
+      { outcome: "completed", note: "手抖又点了一次", expectedRevision: approved.revision },
+      teacherCookie,
+    );
+    assert.equal(second.status, 409, "executionStatus 已经不是 pending，第二次应该落空");
+
+    const { rows } = await pool.query(
+      "SELECT o.refunded_cents FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
+      [approved.enrollmentId],
+    );
+    assert.equal(Number(rows[0]!.refunded_cents), 4000, "不能因为登记了两次就退了两次的钱");
+  });
+
+  test("带 Idempotency-Key 的网络重试：同样不重复增加金额", async () => {
+    const approved = await approvedRefundApplication(2000);
+    const payload = { outcome: "completed" as const, note: "带幂等键", expectedRevision: approved.revision };
+    const headers = { "Idempotency-Key": "refund-retry-1" };
+
+    const first = await post(`/teacher/applications/${approved.id}/refund-result`, payload, teacherCookie, headers);
+    assert.equal(first.status, 200);
+    const second = await post(`/teacher/applications/${approved.id}/refund-result`, payload, teacherCookie, headers);
+    assert.equal(second.status, 200);
+
+    const { rows } = await pool.query(
+      "SELECT o.refunded_cents FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
+      [approved.enrollmentId],
+    );
+    assert.equal(Number(rows[0]!.refunded_cents), 2000);
+  });
+
+  test("退款金额超过订单可退余额：409，不执行", async () => {
+    // createFreshEnrollment 的订单 paid_cents 固定是 88800，提一个明显超过的退款金额。
+    const approved = await approvedRefundApplication(999999);
+    const res = await post(
+      `/teacher/applications/${approved.id}/refund-result`,
+      { outcome: "completed", note: "超额退款", expectedRevision: approved.revision },
+      teacherCookie,
+    );
+    assert.equal(res.status, 409);
+
+    const { rows } = await pool.query(
+      "SELECT o.refunded_cents FROM orders o JOIN enrollments e ON e.order_id = o.id WHERE e.id = $1",
+      [approved.enrollmentId],
+    );
+    assert.equal(Number(rows[0]!.refunded_cents), 0, "超额登记不该真的改动订单金额");
+  });
+
+  test("非退费类型的申请：409", async () => {
+    const app1 = await submitApplication("transfer", "转班", otherCohortId);
+    const res = await post(
+      `/teacher/applications/${app1.id}/refund-result`,
+      { outcome: "completed", note: "x", expectedRevision: app1.revision },
+      teacherCookie,
+    );
+    assert.equal(res.status, 409);
+  });
+});

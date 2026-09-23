@@ -8,7 +8,7 @@ import { Hono } from "hono";
 import { requireAuth, requireRole } from "../auth/middleware.js";
 import { isUniqueViolation } from "../db/pgError.js";
 import type { Db } from "../db/pool.js";
-import { applicationEvents, applications, cohorts, confirmations, enrollmentChanges, enrollments, replayEntitlements } from "../db/schema.js";
+import { applicationEvents, applications, cohorts, confirmations, enrollmentChanges, enrollments, orders, replayEntitlements } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import { claimIdempotencyKey, fulfillIdempotencyKey } from "../idempotency.js";
 
@@ -792,6 +792,111 @@ export function createApplicationRoutes(db: Db): Hono {
     await revokeActiveConfirmation(db, applicationId);
     await db.insert(applicationEvents).values({ applicationId, actorId: actor.id, eventType: "rejected", revision: updated.revision, details: { reason: body.reason } });
     return c.json(toApplication(updated));
+  });
+
+  // POST /teacher/applications/:id/refund-result —— 人工登记退款结果。这个系统没有接支付
+  // 渠道，钱是老师在系统外面手动转的，这里只是把"转成了"或"转失败了"这个事实记下来。
+  // "重复登记不重复增加 refundedCents"靠两层保护：Idempotency-Key（同一次请求的网络重试）
+  // + applications 那条原子 UPDATE 的 WHERE 带 executionStatus='pending'（不是这次请求发起的
+  // 重复调用，比如老师手抖点了两下，第二下会因为 executionStatus 已经不是 pending 而落空）。
+  app.post("/teacher/applications/:applicationId/refund-result", async (c) => {
+    const actor = c.get("actor")!;
+    const applicationId = c.req.param("applicationId")!;
+    const body = await c.req.json().catch(() => null);
+    if (
+      !body ||
+      (body.outcome !== "completed" && body.outcome !== "failed") ||
+      typeof body.note !== "string" ||
+      !body.note ||
+      !Number.isInteger(body.expectedRevision)
+    ) {
+      return errorJson(c, 422, "VALIDATION_ERROR", "outcome/note/expectedRevision 必填");
+    }
+    const idempotencyKey = c.req.header("Idempotency-Key");
+
+    const [existing] = await db.select().from(applications).where(eq(applications.id, applicationId));
+    if (!existing) return errorJson(c, 404, "NOT_FOUND", "申请不存在");
+    if (existing.type !== "refund") return errorJson(c, 409, "INVALID_STATE", "只有退费类型的申请可以登记退款结果");
+
+    // Idempotency-Key 的重放检查必须排在"当前状态还是不是 pending"这个判断之前：
+    // 第一次调用成功后 executionStatus 已经不是 pending 了，如果先做状态判断，
+    // 同一个 key 的合法重试会被误判成"已经登记过、不能再登记"，而不是被正确识别为重放。
+    if (idempotencyKey) {
+      const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+      const claim = await claimIdempotencyKey(db, actor.id, "refundResult", idempotencyKey, requestHash);
+      if (claim.kind === "conflict") {
+        return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
+      }
+      if (claim.kind === "replay" && claim.resultId) {
+        const [row] = await db.select().from(applications).where(eq(applications.id, claim.resultId));
+        return c.json(toApplication(row!));
+      }
+    }
+
+    if (existing.status !== "approved" || existing.executionStatus !== "pending") {
+      return errorJson(c, 409, "INVALID_STATE", "只有已批准、还没登记过结果的退费申请可以登记");
+    }
+
+    class RefundConflict extends Error {}
+    class RefundExceedsBalance extends Error {}
+
+    try {
+      const updated = await db.transaction(async (tx) => {
+        // 先抢 applications 这把锁：谁先把 executionStatus 从 pending 改走，谁才有资格继续
+        // 往下动订单金额。抢不到（并发登记/重复调用）的，这条 UPDATE 直接 0 行。
+        const [row] = await tx
+          .update(applications)
+          .set({ executionStatus: body.outcome, revision: sql`${applications.revision} + 1` })
+          .where(
+            and(
+              eq(applications.id, applicationId),
+              eq(applications.revision, body.expectedRevision),
+              eq(applications.status, "approved"),
+              eq(applications.executionStatus, "pending"),
+            ),
+          )
+          .returning();
+        if (!row) throw new RefundConflict();
+
+        if (body.outcome === "completed") {
+          const refundCents = existing.proposal?.refundCents;
+          if (!Number.isInteger(refundCents)) throw new Error("退费申请缺少 proposal.refundCents，数据不一致");
+          const [enrollment] = await tx.select({ orderId: enrollments.orderId }).from(enrollments).where(eq(enrollments.id, existing.enrollmentId));
+          if (!enrollment) throw new Error("申请指向的报名不存在，数据不一致");
+
+          // 退款金额是否超过订单可退余额，边界判断直接写进 UPDATE 的 WHERE——数据库的
+          // CHECK (refunded_cents <= paid_cents) 是最后一道防线，这里提前判断是为了能
+          // 返回一个业务语义清楚的错误，而不是让调用方看到一条原始的 CHECK 违例。
+          const [orderRow] = await tx
+            .update(orders)
+            .set({ refundedCents: sql`${orders.refundedCents} + ${refundCents}` })
+            .where(and(eq(orders.id, enrollment.orderId), sql`${orders.refundedCents} + ${refundCents} <= ${orders.paidCents}`))
+            .returning({ id: orders.id });
+          if (!orderRow) throw new RefundExceedsBalance();
+        }
+
+        await tx.insert(applicationEvents).values({
+          applicationId,
+          actorId: actor.id,
+          eventType: "refund_result",
+          revision: row.revision,
+          details: { outcome: body.outcome, reference: body.reference ?? null, note: body.note },
+        });
+
+        return row;
+      });
+
+      if (idempotencyKey) await fulfillIdempotencyKey(db, actor.id, "refundResult", idempotencyKey, applicationId);
+      return c.json(toApplication(updated));
+    } catch (err) {
+      if (err instanceof RefundConflict) {
+        return errorJson(c, 409, "REVISION_CONFLICT", "申请已被处理过，或版本已变化");
+      }
+      if (err instanceof RefundExceedsBalance) {
+        return errorJson(c, 409, "INVALID_STATE", "退款金额超过订单可退余额");
+      }
+      throw err;
+    }
   });
 
   return app;
