@@ -49,8 +49,12 @@ const isUniqueViolation = (err: unknown): boolean => (err as { code?: string })?
 
 export function createTeacherRoutes(pool: pg.Pool): Hono {
   const app = new Hono();
+  // 这一行是整份文件唯一的权限入口：所有 /teacher/* 路由先登录、再校验角色，
+  // 具体每个 handler 不用重复写这两行判断。
   app.use("/teacher/*", requireAuth, requireRole("teacher"));
 
+  // POST /teacher/cohorts —— 创建班期。courseVersionId 必须真的属于 courseId（不只是存在），
+  // 否则会挂出一个版本归属和课程对不上的班期。
   app.post("/teacher/cohorts", async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.courseId !== "string" || typeof body.courseVersionId !== "string" || !body.name || !body.status) {
@@ -86,6 +90,8 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
     }
   });
 
+  // PATCH /teacher/cohorts/:cohortId —— 部分更新（名称/开课时间/价格/状态/是否当期在售）。
+  // 只把请求里真的带了的字段拼进 SET，没提到的字段保持原值不动。
   app.patch("/teacher/cohorts/:cohortId", async (c) => {
     const cohortId = c.req.param("cohortId");
     const body = await c.req.json().catch(() => null);
@@ -116,6 +122,8 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
     }
   });
 
+  // POST /teacher/lessons —— 在某个班期下新建一节课。同一班期内 position 不能重复
+  // （数据库唯一约束兜底，冲突时翻译成 422）。
   app.post("/teacher/lessons", async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.cohortId !== "string" || !body.title || !Number.isInteger(body.position)) {
@@ -138,6 +146,8 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
     }
   });
 
+  // PATCH /teacher/lessons/:lessonId —— 部分更新课次标题/顺序/回放地址，规则和上面的
+  // cohorts PATCH 一样：只改请求里出现的字段。
   app.patch("/teacher/lessons/:lessonId", async (c) => {
     const lessonId = c.req.param("lessonId");
     const body = await c.req.json().catch(() => null);
@@ -165,6 +175,8 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
     }
   });
 
+  // POST /teacher/enrollments —— 老师手工登记报名（线下收款、非标准支付场景），一次事务里
+  // 同时建一条 source=manual 的订单和一条报名，不是只建报名而缺订单。
   app.post("/teacher/enrollments", async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.studentId !== "string" || typeof body.cohortId !== "string" || typeof body.policyId !== "string" || !Number.isInteger(body.paidCents)) {
@@ -207,6 +219,9 @@ export function createTeacherRoutes(pool: pg.Pool): Hono {
     }
   });
 
+  // POST /teacher/progress/import —— 批量录入学习进度。逐条独立校验和写入，一条不合法
+  // （课次不存在/学员没报名这个班期）不会拖累同批次里其它合法条目；结果按 applied/rejected
+  // 分开报告，调用方能知道具体是哪几条、为什么被拒绝。
   app.post("/teacher/progress/import", async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body || !Array.isArray(body.items) || body.items.length === 0) {
