@@ -143,6 +143,61 @@ async function claimConfirmationAndTransition(
   });
 }
 
+// confirm/approve/refund-result 三个端点对 Idempotency-Key 的处理逻辑完全一样，只是
+// operation 名字不同：没带 key 就直接放行；带了 key，交给 claimIdempotencyKey 判断是
+// "冲突"（同 key 不同内容）、"重放"（已经成功过，把当年的结果原样返回）还是"放行"
+// （第一次见这个 key，继续走正常流程）。调用方只需要处理这三种结果，不用关心
+// hash 怎么算、claim 表怎么查。
+type IdempotencyOutcome = { kind: "proceed" } | { kind: "conflict" } | { kind: "replay"; row: ApplicationRow };
+
+async function checkIdempotency(
+  db: Db,
+  actorId: string,
+  operation: string,
+  idempotencyKey: string | undefined,
+  body: unknown,
+): Promise<IdempotencyOutcome> {
+  if (!idempotencyKey) return { kind: "proceed" };
+  const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+  const claim = await claimIdempotencyKey(db, actorId, operation, idempotencyKey, requestHash);
+  if (claim.kind === "conflict") return { kind: "conflict" };
+  if (claim.kind === "replay" && claim.resultId) {
+    const [row] = await db.select().from(applications).where(eq(applications.id, claim.resultId));
+    return { kind: "replay", row: row! };
+  }
+  return { kind: "proceed" };
+}
+
+class RefundExceedsBalance extends Error {}
+
+// refund-result 的 outcome='completed' 分支：给订单加钱、把报名的访问权限收回，两件事
+// 在同一个事务内完成（调用方负责传入已经开启的 tx）。抛 RefundExceedsBalance 由调用方
+// 转成 409，不在这里直接碰 HTTP 层。
+async function finalizeCompletedRefund(tx: Db, existing: ApplicationRow): Promise<void> {
+  const refundCents = existing.proposal?.refundCents;
+  if (!Number.isInteger(refundCents)) throw new Error("退费申请缺少 proposal.refundCents，数据不一致");
+  const [enrollment] = await tx.select({ orderId: enrollments.orderId }).from(enrollments).where(eq(enrollments.id, existing.enrollmentId));
+  if (!enrollment) throw new Error("申请指向的报名不存在，数据不一致");
+
+  // 退款金额是否超过订单可退余额，边界判断直接写进 UPDATE 的 WHERE——数据库的
+  // CHECK (refunded_cents <= paid_cents) 是最后一道防线，这里提前判断是为了能
+  // 返回一个业务语义清楚的错误，而不是让调用方看到一条原始的 CHECK 违例。
+  const [orderRow] = await tx
+    .update(orders)
+    .set({ refundedCents: sql`${orders.refundedCents} + ${refundCents}` })
+    .where(and(eq(orders.id, enrollment.orderId), sql`${orders.refundedCents} + ${refundCents} <= ${orders.paidCents}`))
+    .returning({ id: orders.id });
+  if (!orderRow) throw new RefundExceedsBalance();
+
+  // 钱退了，这份报名的访问权限也要一起收回——enrollments.status 不只是展示用的
+  // 标记，teacher.ts 里标记学习进度的权限判断就是靠它（status='active'）。
+  // 不在这里改的话，退费到账后学员还能被当成"在读"记录进度。
+  await tx
+    .update(enrollments)
+    .set({ status: "ended", revision: sql`${enrollments.revision} + 1` })
+    .where(eq(enrollments.id, existing.enrollmentId));
+}
+
 // 简单的不透明游标：base64("created_at|id")，按 (created_at, id) 降序翻页。
 function encodeCursor(row: { createdAt: Date; id: string }): string {
   return Buffer.from(`${row.createdAt.toISOString()}|${row.id}`).toString("base64url");
@@ -311,17 +366,11 @@ export function createApplicationRoutes(db: Db): Hono {
     // Idempotency-Key 重放：只有确认过"上一次真的成功过"（result_id 有值）才直接回读结果，
     // 否则（第一次见到这个 key，或者上一次失败了没留下 result_id）都要走一遍下面的正常逻辑——
     // 不能因为 key 重复出现就假装上次成功了，那样会把一次真实的失败悄悄变成假的成功。
-    if (idempotencyKey) {
-      const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
-      const claim = await claimIdempotencyKey(db, actor.id, "confirmApplication", idempotencyKey, requestHash);
-      if (claim.kind === "conflict") {
-        return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
-      }
-      if (claim.kind === "replay" && claim.resultId) {
-        const [row] = await db.select().from(applications).where(eq(applications.id, claim.resultId));
-        return c.json(toApplication(row!));
-      }
+    const idempotency = await checkIdempotency(db, actor.id, "confirmApplication", idempotencyKey, body);
+    if (idempotency.kind === "conflict") {
+      return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
     }
+    if (idempotency.kind === "replay") return c.json(toApplication(idempotency.row));
 
     // 同一张确认卡已经把这张申请确认过了（网络重试/手抖点两次）：当成幂等重放，
     // 返回当前状态而不是报错——这一步不依赖 Idempotency-Key 头，只看确认卡本身是否已用于这张申请。
@@ -673,17 +722,11 @@ export function createApplicationRoutes(db: Db): Hono {
 
     // Idempotency-Key 重放：跟 confirm 同一套规则，只信任真的成功过（留了 result_id）的记录，
     // 半途失败的不算数，重试要重新走一遍。
-    if (idempotencyKey) {
-      const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
-      const claim = await claimIdempotencyKey(db, actor.id, "approveApplication", idempotencyKey, requestHash);
-      if (claim.kind === "conflict") {
-        return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
-      }
-      if (claim.kind === "replay" && claim.resultId) {
-        const [row] = await db.select().from(applications).where(eq(applications.id, claim.resultId));
-        return c.json(toApplication(row!));
-      }
+    const idempotency = await checkIdempotency(db, actor.id, "approveApplication", idempotencyKey, body);
+    if (idempotency.kind === "conflict") {
+      return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
     }
+    if (idempotency.kind === "replay") return c.json(toApplication(idempotency.row));
 
     let targetCohortId: string | null = null;
     if (existing.type === "transfer") {
@@ -821,24 +864,17 @@ export function createApplicationRoutes(db: Db): Hono {
     // Idempotency-Key 的重放检查必须排在"当前状态还是不是 pending"这个判断之前：
     // 第一次调用成功后 executionStatus 已经不是 pending 了，如果先做状态判断，
     // 同一个 key 的合法重试会被误判成"已经登记过、不能再登记"，而不是被正确识别为重放。
-    if (idempotencyKey) {
-      const requestHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
-      const claim = await claimIdempotencyKey(db, actor.id, "refundResult", idempotencyKey, requestHash);
-      if (claim.kind === "conflict") {
-        return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
-      }
-      if (claim.kind === "replay" && claim.resultId) {
-        const [row] = await db.select().from(applications).where(eq(applications.id, claim.resultId));
-        return c.json(toApplication(row!));
-      }
+    const idempotency = await checkIdempotency(db, actor.id, "refundResult", idempotencyKey, body);
+    if (idempotency.kind === "conflict") {
+      return errorJson(c, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已用于内容不同的请求");
     }
+    if (idempotency.kind === "replay") return c.json(toApplication(idempotency.row));
 
     if (existing.status !== "approved" || existing.executionStatus !== "pending") {
       return errorJson(c, 409, "INVALID_STATE", "只有已批准、还没登记过结果的退费申请可以登记");
     }
 
     class RefundConflict extends Error {}
-    class RefundExceedsBalance extends Error {}
 
     try {
       const updated = await db.transaction(async (tx) => {
@@ -858,30 +894,7 @@ export function createApplicationRoutes(db: Db): Hono {
           .returning();
         if (!row) throw new RefundConflict();
 
-        if (body.outcome === "completed") {
-          const refundCents = existing.proposal?.refundCents;
-          if (!Number.isInteger(refundCents)) throw new Error("退费申请缺少 proposal.refundCents，数据不一致");
-          const [enrollment] = await tx.select({ orderId: enrollments.orderId }).from(enrollments).where(eq(enrollments.id, existing.enrollmentId));
-          if (!enrollment) throw new Error("申请指向的报名不存在，数据不一致");
-
-          // 退款金额是否超过订单可退余额，边界判断直接写进 UPDATE 的 WHERE——数据库的
-          // CHECK (refunded_cents <= paid_cents) 是最后一道防线，这里提前判断是为了能
-          // 返回一个业务语义清楚的错误，而不是让调用方看到一条原始的 CHECK 违例。
-          const [orderRow] = await tx
-            .update(orders)
-            .set({ refundedCents: sql`${orders.refundedCents} + ${refundCents}` })
-            .where(and(eq(orders.id, enrollment.orderId), sql`${orders.refundedCents} + ${refundCents} <= ${orders.paidCents}`))
-            .returning({ id: orders.id });
-          if (!orderRow) throw new RefundExceedsBalance();
-
-          // 钱退了，这份报名的访问权限也要一起收回——enrollments.status 不只是展示用的
-          // 标记，teacher.ts 里标记学习进度的权限判断就是靠它（status='active'）。
-          // 不在这里改的话，退费到账后学员还能被当成"在读"记录进度。
-          await tx
-            .update(enrollments)
-            .set({ status: "ended", revision: sql`${enrollments.revision} + 1` })
-            .where(eq(enrollments.id, existing.enrollmentId));
-        }
+        if (body.outcome === "completed") await finalizeCompletedRefund(tx, existing);
 
         await tx.insert(applicationEvents).values({
           applicationId,
