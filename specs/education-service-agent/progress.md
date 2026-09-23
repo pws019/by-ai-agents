@@ -17,6 +17,7 @@
 | T-09 只读业务 API | 完成 | `education-api/src/routes/`（catalog.ts、me.ts 新增两个端点、cohorts.ts）。`npm test --workspace=education-api`：40 passed。反向验证：`schedule`/`transfer-targets` 各去掉一次 `student_id`/`e.student_id` 过滤 → 对应用例从 404 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`GET /catalog/current` 返回 AI 训练营当前班（含课程标题、v2、价格）；`student.li` 登录后 `/me/enrollments` 返回其唯一报名；`/schedule` 三节课按 position 排序、`hasReplay` 与种子数据一致；`/progress` 只返回真实录入的两条记录；`/cohorts/transfer-targets` 只返回预告班（upcoming）；用 `student.li` 的 cookie 访问 `student.wang` 的报名 id 全部 404 |
 | T-10 老师维护/导入 API | 完成 | 先补 `contracts/education/openapi.yaml`（6 端点 + 8 schema，`redocly lint` 0 error、`validate.mjs` 全 PASS），再实现 `education-api/src/routes/teacher.ts`。`npm test --workspace=education-api`：52 passed（含角色权限、courseVersion 归属校验、cohort/lesson 唯一约束冲突转 422、手工报名生成 `source=manual` 订单、进度导入部分成功）。反向验证：临时去掉 `requireRole("teacher")` → 学员访问 403 变 200，恢复后全绿。真实开发服务器 + T-07 种子数据实测：`teacher.alice` 能创建课次、`student.chen` 同样请求 403；批量导入进度时未报名的学员被拒绝、已报名的正常写入且 `source` 正确记为 `import`。测试产生的数据（临时课次、被改动的进度状态）已用 `npm run seed` 和手工 DELETE 清理，dev 库行数与 T-07 文档一致（users=5/orders=3/enrollments=3/lessons=8） |
 | T-11 前端登录/角色路由/我的学习页 | 完成 | `customer-frontend/src/education/`（api.ts、AuthContext.tsx、RequireAuth.tsx、LoginPage.tsx、MyLearningPage.tsx、TeacherPlaceholderPage.tsx、EducationLayout.tsx）+ `vite.config.ts` 加 `/api` → 8400 的开发代理（浏览器视角同源，cookie 自动带，不用搭 CORS）+ `router.tsx` 新增 `/login`、`/my-learning`、`/teacher` 三条路由，legacy 聊天路由树原样保留。`tsc -b --noEmit` 通过。真实浏览器（chrome-devtools MCP）端到端验证：`student.chen` 登录后 `/my-learning` 显示的班期名、课次、进度状态与 T-07 种子数据逐字段一致；硬刷新后登录状态不丢（cookie-based）；退出登录后 `RequireAuth` 响应式跳回 `/login`（不是只在首次加载判断一次）；直接访问 `/my-learning` 不带 session 会被拦到 `/login`；legacy `/` 路由渲染不受影响（原有"mastra dev 未启动"的错误提示照常出现，证明改动没有波及 legacy 代码路径）。**测试中发现并修复一个真实 bug**：登录成功后的跳转原本写死 `/my-learning`，老师账号登录会先跳错页面再被 `RequireAuth` 拦下显示"无权限"，不是真的角色路由；改成 `AuthContext.login()` 返回 `CurrentUser`，由 `LoginPage` 按 `role` 决定目的地，修复后用真实老师账号重新登录验证过。未做自动化前端测试（customer-frontend 目前没有测试框架），验证手段是浏览器手动走查，记为已知覆盖缺口 |
+| T-12 申请草稿/摘要/版本/确认 API | 进行中（脚手架完成，`confirm` 端点留给学员手写） | `education-api/src/routes/applications.ts`（drafts 创建/编辑/列表/详情）+ `education-api/src/idempotency.ts`（通用幂等键声明/回填，供 confirm 及后续 T-13～15 复用）。`npm test --workspace=education-api`：66 个用例，60 passed、6 failed——失败的 6 个全部是 `POST /applications/:id/confirm` 的用例（当前是 501 占位），符合预期。已实现部分覆盖：AC-007（目标班期未知可创建）、AC-006（同 enrollment/type 重复创建草稿返回同一 id）、草稿已过 draft 阶段时重复创建返回 409、PATCH 草稿的 `expectedRevision` 原子校验（WHERE 里带 revision 判断，不是先查后改）、旧确认卡在编辑后被标记撤销、`GET /applications/:id` 对非本人非老师一律 404。真实开发服务器 + `student.li` 种子账号实测创建草稿成功，测试数据已清理（`app.applications`/`app.confirmations` 行数复原为 0，与 T-07 基线一致）。`confirm` 端点留了完整的行为清单注释（正常路径/同 confirmationId 重放幂等/AC-005 陈旧确认卡/确认卡不存在/非本人 404/Idempotency-Key 头重试）和对应的失败测试，由学员手写——这是本轮"并发控制"手写练习，核心是把"确认卡未使用"判断和"标记为已使用"合并进同一条原子 UPDATE，与 T-06 Q1 的 TOCTOU 结论同源，应用在 UPDATE 而不是 INSERT 上 |
 
 ## 2. T-01 基线盘点
 
@@ -101,6 +102,15 @@
 | `withActor` 中间件只解析身份、不做 401；`requireAuth`/`requireRole` 单独挂在需要的路由前 | 同一套身份解析要同时服务"允许匿名"（登录、公开招生信息）和"必须登录"的路由，401 的判断权应该留给具体路由，不能在全局中间件里一刀切 |
 | 端口 8400，前缀 `/api/v1`（沿用契约 `servers`） | 8200/8300 已被 legacy/agent 占用；前缀与 openapi.yaml 保持一致，不是另起一套 |
 | 资源级授权（某条记录是否属于当前 actor）、BFF→agent 内部身份签发与验签，本轮未实现 | design.md §3 要求的核心机制（不能信任浏览器提交的 actor、内部 token 不进模型提示词），属于本项目分层约定里"必须亲手写一遍"的部分；且当前没有具体资源路由（T-09 才有），先留一个明确边界比提前臆造接口更诚实 |
+
+### T-12 设计决定（drafts/patch/list/get 已实现；confirm 的并发控制留给学员手写）
+| 决定 | 理由 |
+|---|---|
+| `POST /applications/drafts` 撞到 `applications_one_open_per_enrollment_type` 唯一约束时，按现有申请的状态分两种处理：还在 draft 就当作重复提交、原样返回同一张（AC-006）；已经过了 draft（submitted 及以后）就 409，不悄悄复用 | 契约的 `ApplicationDraft` 响应要求 `confirmation` 字段必填，而已提交的申请不一定还有活着的确认卡；把"这是同一次草稿提交的重试"和"确实已经有一张申请在流转、这次请求本身就不该成立"分开，比硬凑一个不存在的确认卡诚实 |
+| `PATCH .../draft` 的 `expectedRevision` 判断直接写进 `UPDATE ... WHERE id=$1 AND revision=$2`，不是先 `SELECT` 出 revision 再判断相不相等 | 先查后判断中间有时间窗口，两个并发 PATCH 会都读到旧 revision、都以为能改，后提交的会覆盖先提交的（T-06 Q1 的 TOCTOU，这次落在 UPDATE 上）；把判断做进 WHERE，数据库保证只有一个能改成功 |
+| 确认卡有效期定为 15 分钟，写在代码注释里而非契约/需求文档 | 没有产品侧给出具体数字，是纯工程判断（给学员看清摘要的时间，又不至于让作废的旧摘要长期可用）；不属于业务事实，不写进对外契约，避免以后被当成承诺 |
+| `GET /applications/:id` 对"不存在"和"存在但不是你的、也不是老师"返回同一个 404 | 延续 T-08/T-09 已经定下的模式：不用状态码差异告诉调用方"这个 id 是否存在" |
+| 幂等键基础设施（`idempotency.ts`）单独抽出、本轮先写好但只接进 confirm 一个端点 | `Idempotency-Key` 在契约里同时出现在 drafts/confirm/approve/refund-result 四个端点上，是同一套机制；写成通用两函数（声明/回填）而不是在每个 handler 里各写一遍，T-13～15 直接复用，不用重新设计 |
 
 ### T-09 设计决定
 | 决定 | 理由 |
