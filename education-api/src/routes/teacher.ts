@@ -1,6 +1,6 @@
 // 老师基础维护/导入 API：班期、课次、手工报名、进度导入。契约见 contracts/education/openapi.yaml
 // 的 /teacher/cohorts、/teacher/lessons、/teacher/enrollments、/teacher/progress/import。
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { requireAuth, requireRole } from "../auth/middleware.js";
 import { isUniqueViolation } from "../db/pgError.js";
@@ -32,6 +32,31 @@ export function createTeacherRoutes(db: Db): Hono {
   // 这一行是整份文件唯一的权限入口：所有 /teacher/* 路由先登录、再校验角色，
   // 具体每个 handler 不用重复写这两行判断。
   app.use("/teacher/*", requireAuth, requireRole("teacher"));
+
+  // GET /teacher/cohorts/transfer-targets?enrollmentId= —— 老师提转班方案时选目标班期用。
+  // 跟学员版 /cohorts/transfer-targets 查询逻辑完全一样（同课程、非当前、未结束），
+  // 唯一区别是权限判断：这里不校验 enrollmentId 是不是"自己的报名"（老师本来就没有
+  // "自己的报名"这个概念），只要求登录角色是老师——这是 T-16 做审批页时发现的真实缺口，
+  // 之前老师端完全没有任何方式查到班期 id/name 的对应关系。
+  app.get("/teacher/cohorts/transfer-targets", async (c) => {
+    const enrollmentId = c.req.query("enrollmentId");
+    if (!enrollmentId) return errorJson(c, 422, "VALIDATION_ERROR", "enrollmentId 必填");
+
+    const [enrollment] = await db
+      .select({ courseId: cohorts.courseId, cohortId: enrollments.cohortId })
+      .from(enrollments)
+      .innerJoin(cohorts, eq(cohorts.id, enrollments.cohortId))
+      .where(eq(enrollments.id, enrollmentId));
+    if (!enrollment) return errorJson(c, 404, "NOT_FOUND", "未找到报名");
+
+    const targets = await db
+      .select({ id: cohorts.id, name: cohorts.name, startAt: cohorts.startAt })
+      .from(cohorts)
+      .where(and(eq(cohorts.courseId, enrollment.courseId), ne(cohorts.id, enrollment.cohortId), inArray(cohorts.status, ["upcoming", "running"])))
+      .orderBy(sql`${cohorts.startAt} asc nulls last`);
+
+    return c.json({ items: targets.map((t) => ({ cohortId: t.id, name: t.name, startAt: t.startAt })) });
+  });
 
   // POST /teacher/cohorts —— 创建班期。courseVersionId 必须真的属于 courseId（不只是存在），
   // 否则会挂出一个版本归属和课程对不上的班期。

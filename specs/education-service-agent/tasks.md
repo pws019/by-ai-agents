@@ -33,7 +33,7 @@
 - [x] T-13（3h）补充、撤回、老师提出方案、学员接受/拒绝，校验状态机。`education-api/src/routes/applications.ts`。验收：AC-007/022；拒绝方案不自动执行。
 - [x] T-14（4h）老师批准转班事务、权益选项、审计。`education-api/src/routes/applications.ts`。验收：AC-008，并发冲突和事务失败无半成品。outbox 表推迟到 M3/M4/M5（与 T-06 决定一致），本轮范围不含 outbox。
 - [x] T-15（3h）退费协商、批准、人工结果登记与金额边界。`education-api/src/routes/applications.ts`。验收：AC-009；重复登记不重复增加退款额。
-- [ ] T-16（4h）我的申请与老师审批页、确认卡片、时间线。`customer-frontend/src/routes/`。验收：学生提交→老师处理→学生查询无需聊天即可完成。
+- [x] T-16（4h）我的申请与老师审批页、确认卡片、时间线。`customer-frontend/src/education/`（原计划的 `src/routes/` 是 legacy 聊天 Demo 的路由目录，教育服务前端页面统一放在 `src/education/`，跟 T-11 已有的目录一致）。验收：学生提交→老师处理→学生查询无需聊天即可完成，浏览器真机走通。补了一个后端小缺口：`GET /teacher/cohorts/transfer-targets`（老师提转班方案选目标班期用，原来只有学员版）。
 - [ ] T-17（2h）写入后超时、重复 key、不同 key 重复申请、并发审批集成测试。`education-api/tests/`。验收：AC-006/008/010/022。
 
 阶段门槛：领域闭环可独立工作。讲解事务、幂等、revision 和业务状态为何不交给 LLM。

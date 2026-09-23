@@ -80,6 +80,8 @@ const patch = (path: string, body: unknown, cookie?: string) =>
     headers: { "Content-Type": "application/json", Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}) },
     body: JSON.stringify(body),
   });
+const get = (path: string, cookie?: string) =>
+  app.request(`/api/v1${path}`, { headers: { Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}) } });
 
 describe("角色权限：学员访问老师端点", () => {
   test("学员 POST /teacher/cohorts：403", async () => {
@@ -182,6 +184,33 @@ describe("POST /teacher/enrollments", () => {
       body.enrollmentId,
     ]);
     assert.equal(rows[0]!.source, "manual");
+  });
+});
+
+describe("GET /teacher/cohorts/transfer-targets", () => {
+  test("学员访问：403", async () => {
+    const res = await get(`/teacher/cohorts/transfer-targets?enrollmentId=00000000-0000-4000-8000-000000000000`, studentCookie);
+    assert.equal(res.status, 403);
+  });
+
+  test("查不属于自己（老师本来就没有'自己的报名'）的报名也能查到：跟学员版的权限判断不一样", async () => {
+    const otherCohortId = await id(
+      "INSERT INTO cohorts (course_id, course_version_id, name, currency, status) VALUES ($1,$2,'另一个班期','CNY','upcoming') RETURNING id",
+      [courseId, versionId],
+    );
+    const enrollRes = await post("/teacher/enrollments", { studentId, cohortId, policyId, paidCents: 88800 }, teacherCookie);
+    const enrollmentId = (await enrollRes.json()).enrollmentId;
+
+    const res = await get(`/teacher/cohorts/transfer-targets?enrollmentId=${enrollmentId}`, teacherCookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.items.some((c: { cohortId: string }) => c.cohortId === otherCohortId), "同课程、未结束、非当前班期应该出现在候选里");
+    assert.ok(!body.items.some((c: { cohortId: string }) => c.cohortId === cohortId), "当前正在读的班期不该出现在自己的候选目标里");
+  });
+
+  test("报名不存在：404", async () => {
+    const res = await get(`/teacher/cohorts/transfer-targets?enrollmentId=00000000-0000-4000-8000-000000000000`, teacherCookie);
+    assert.equal(res.status, 404);
   });
 });
 

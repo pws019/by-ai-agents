@@ -3,9 +3,10 @@ import { createBrowserRouter } from "react-router";
 import { AppLayout } from "./components/layout/AppLayout";
 import { EducationLayout } from "./education/EducationLayout";
 import { LoginPage } from "./education/LoginPage";
+import { MyApplicationsPage } from "./education/MyApplicationsPage";
 import { MyLearningPage } from "./education/MyLearningPage";
 import { RequireAuth } from "./education/RequireAuth";
-import { TeacherPlaceholderPage } from "./education/TeacherPlaceholderPage";
+import { TeacherApplicationsPage } from "./education/TeacherApplicationsPage";
 import { IndexRoute } from "./routes/IndexRoute";
 import { SessionRoute } from "./routes/SessionRoute";
 
@@ -33,10 +34,18 @@ export const router = createBrowserRouter([
         ),
       },
       {
+        path: "my-applications",
+        element: (
+          <RequireAuth role="student">
+            <MyApplicationsPage />
+          </RequireAuth>
+        ),
+      },
+      {
         path: "teacher",
         element: (
           <RequireAuth role="teacher">
-            <TeacherPlaceholderPage />
+            <TeacherApplicationsPage />
           </RequireAuth>
         ),
       },

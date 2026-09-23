@@ -333,6 +333,27 @@ paths:
               schema: {$ref: '#/components/schemas/ApplicationDetail'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /teacher/cohorts/transfer-targets:
+    get:
+      tags: [teacher]
+      operationId: teacherGetTransferTargets
+      summary: 老师提转班方案时用；跟 /cohorts/transfer-targets 同样的查询逻辑，不校验报名归属
+      parameters:
+        - {name: enrollmentId, in: query, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: 目标班期，可为空数组
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/CohortSummary'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /teacher/cohorts:
     post:
       tags: [teacher]

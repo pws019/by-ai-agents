@@ -40,3 +40,72 @@ export type ProgressItem = {
   status: ProgressStatus;
   source: "manual" | "import";
 };
+
+// 转班/退费申请（T-16）。字段和 contracts/education/openapi.yaml 的 schema 一一对应，
+// 不额外发明字段——后端已经把状态机和确认卡机制想清楚了，前端只负责如实展示和调用。
+export type ApplicationType = "transfer" | "refund";
+
+export type ApplicationStatus =
+  | "draft"
+  | "submitted"
+  | "needs_info"
+  | "awaiting_student_confirmation"
+  | "approved"
+  | "rejected"
+  | "withdrawn";
+
+export type ApplicationExecutionStatus = "not_started" | "pending" | "completed" | "failed";
+
+export type ApplicationSummary = {
+  type: ApplicationType;
+  enrollmentId: string;
+  reason: string;
+  targetCohortId: string | null;
+  refundCents: number | null;
+};
+
+// 确认卡：申请草稿创建、PATCH draft、老师 propose 之后都会签发一张，
+// confirmationId 绑定当时的 revision 和内容摘要——过期或内容变过就不能再用（AC-005）。
+export type Confirmation = {
+  confirmationId: string;
+  applicationId: string;
+  revision: number;
+  expiresAt: string;
+  summary: ApplicationSummary;
+};
+
+export type ApplicationDraft = {
+  id: string;
+  revision: number;
+  status: ApplicationStatus;
+  summary: ApplicationSummary;
+  confirmation: Confirmation;
+};
+
+export type ApplicationProposal = { targetCohortId?: string; refundCents?: number } | null;
+
+export type Application = {
+  id: string;
+  type: ApplicationType;
+  enrollmentId: string;
+  status: ApplicationStatus;
+  executionStatus: ApplicationExecutionStatus;
+  revision: number;
+  summary: ApplicationSummary;
+  proposal: ApplicationProposal;
+  pendingConfirmation?: Confirmation;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ApplicationEvent = {
+  eventType: string;
+  actorId: string;
+  revision: number;
+  details: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ApplicationDetail = Application & { events: ApplicationEvent[] };
+
+export type ApplicationPage = { items: Application[]; nextCursor: string | null };

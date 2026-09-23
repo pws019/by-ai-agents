@@ -51,7 +51,12 @@ export function MyLearningPage() {
   return (
     <div className="min-h-screen bg-surface text-on-surface p-8 max-w-container-max-width mx-auto">
       <header className="flex items-center justify-between mb-6">
-        <h1 className="text-headline-sm">我的学习</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-headline-sm">我的学习</h1>
+          <a href="/my-applications" className="text-sm text-primary underline">
+            我的申请
+          </a>
+        </div>
         <div className="flex items-center gap-3 text-sm text-on-surface-variant">
           <span>{user?.loginName}</span>
           <button onClick={() => void logout()} className="text-primary underline">
