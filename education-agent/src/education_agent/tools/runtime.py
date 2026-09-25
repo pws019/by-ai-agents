@@ -18,6 +18,14 @@ class ToolRuntime:
         self._specs = {s.name: s for s in specs}
         self._http = http
 
+    def restricted_to(self, names: set[str]) -> "ToolRuntime":
+        """只保留指定工具的运行时，共用同一个 HTTP 连接池。图里不同分支拿到不同的子集（最小权限）：
+        不在子集里的工具，模型既看不到，即使硬要调用也会走 UNKNOWN_TOOL——限制是"被强制"的，而不只是"没告诉它"。"""
+        missing = names - self._specs.keys()
+        if missing:
+            raise ValueError(f"不存在的工具: {sorted(missing)}")  # 建图时就失败，避免拼写错误悄悄变成"少了一个工具"
+        return ToolRuntime(tuple(s for s in self._specs.values() if s.name in names), self._http)
+
     def schemas(self) -> list[dict]:
         """给模型看的工具清单（名字、描述、参数 JSON Schema）。RunContext 不在其中——模型不知道也不需要知道"我是谁"。"""
         return [
