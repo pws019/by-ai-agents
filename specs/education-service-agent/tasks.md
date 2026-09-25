@@ -40,7 +40,7 @@
 
 ## M3：Agent 与人工协作（22h）
 
-- [ ] T-18（3h）固定工具契约及可信 actor 注入，参数/超时/预算。`education-agent/src/tools/`。验收：工具不可指定任意用户或审批。
+- [x] T-18（3h）固定工具契约及可信 actor 注入，参数/超时/预算。`education-agent/src/tools/`。验收：工具不可指定任意用户或审批。
 - [ ] T-19（4h）实现 route/query/draft/respond 图、任务状态及确认恢复。`education-agent/src/graphs/`。验收：模型输出申请草稿，只有 UI 确认提交；AC-004/011。
 - [ ] T-20（3h）会话持久化、BFF SSE 与重复消息/并发生成处理。`education-api/src/chat/`。验收：AC-021；断线可查询完成消息。
 - [ ] T-21（3h）前端脱离 Mastra SDK，新 HTTP/SSE 适配、工具/确认卡片。`customer-frontend/src/lib/`、`hooks/useChat.ts`。验收：聊天申请流程端到端通过。
