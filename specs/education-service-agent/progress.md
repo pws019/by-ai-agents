@@ -1,6 +1,6 @@
 # 进度记录
 
-更新：2026-09-23。M1（业务事实与身份，T-06～T-11）全部完成。M2（申请闭环，先不用模型）**全部完成**（T-12～T-17），验收证据见下表。M2 阶段门槛（讲解）已过，L-02 独立练习待做。M3 进行中：T-18 已完成（2026-09-25），下一步 T-19。
+更新：2026-09-23。M1（业务事实与身份，T-06～T-11）全部完成。M2（申请闭环，先不用模型）**全部完成**（T-12～T-17），验收证据见下表。M2 阶段门槛（讲解）已过，L-02 独立练习待做。M3 进行中：T-18 已完成（2026-09-25）；T-19 第 1/3 步（模型层）完成，下一步图骨架与内循环。
 
 ## 1. 任务状态与验证证据
 
@@ -24,6 +24,7 @@
 | T-16 我的申请与老师审批页、确认卡片、时间线 | 完成 | `customer-frontend/src/education/`：新增 `MyApplicationsPage.tsx`（学员，路由 `/my-applications`）、`TeacherApplicationsPage.tsx`（老师，路由 `/teacher`，替换掉原来的 `TeacherPlaceholderPage`）、`applicationLabels.ts`（状态/事件中文文案，两页共用），`types.ts`/`api.ts` 补齐 T-12～T-15 全部端点的类型和调用封装。`tsc -b` 通过；`education-api` 全量 97 passed（含下面提到的新端点）。**真实浏览器端到端验证**（chrome-devtools MCP，`student.li` + `teacher.alice` 两个真实账号，两个隔离的浏览器 tab 互相配合操作，全程没有伪造数据、没有直接改数据库）：① 学员建转班草稿（目标"未定"）→自动确认提交；② 老师提方案（选目标班期，下拉框数据来自新端点）；③ 学员接受，时间线正确显示"老师提出方案/学员接受方案"；④ 老师直接批准，`executionStatus` 变 `completed`，操作区正确收起；⑤ 老师对另一条退费申请提方案→学员接受→批准（`executionStatus=pending`）→登记退款结果（`completed`），时间线完整记录五步；⑥ 老师对第三条申请要求补充信息→学员补充→状态正确回到"待处理"；⑦ 学员撤回申请，状态变"已撤回"，操作按钮正确消失。全程浏览器控制台无报错。**过程中发现并修复一个真实 bug**：`createApplicationDraft` 失败后再次提交成功，页面上的错误提示没有清除，一直挂在"创建失败"——`onCreated` 回调里漏了 `setError(null)`，用真实操作走查出来的，不是靠猜。 |
 | T-17 写入后超时/重复 key/不同 key 重复申请/并发审批集成测试 | 完成 | 测试全部加在 `education-api/src/routes/applications.test.ts`（原计划的独立 `tests/` 目录没建，理由见 tasks.md）。新增 6 个用例，applications.test.ts 单独跑 46 passed，全量 101 passed。覆盖此前完全没测过的两处：**AC-006**——`POST /applications/drafts` 面对"两个不同 Idempotency-Key 提交同一份草稿"和"真并发（`Promise.all`）创建同一 enrollment+type 的草稿"，都应该靠业务唯一索引收敛成一条申请，不靠 Idempotency-Key 机制（drafts 端点本来就没实现 Idempotency-Key 处理，合约里列了这个 header 参数只是没用上，这次顺便确认了这不是遗漏——AC-006 的 dedup 本来就该由业务唯一约束负责，两条机制不是一回事）；**AC-010**——`approve` 的 Idempotency-Key 重放分支（"写入已经成功但客户端没收到响应就重试"），此前 approve 只测过 revision 并发冲突（AC-008），从没测过它自己的幂等重试逻辑，属于真实的覆盖盲区，不是凑数。顺带补了一个同样此前零覆盖的通用分支：`confirm` 同一个 Idempotency-Key 配不同请求内容 → 409 `IDEMPOTENCY_KEY_REUSED`（confirm/approve/refund-result 共用同一套 `checkIdempotency` helper，这条冲突路径此前是完全没有测试碰过的死代码）。反向验证：临时把 approve 里的 `checkIdempotency` 调用替换成写死的 `{kind:'proceed'}`，AC-010 新用例按预期从绿变红（"重试应该原样拿到第一次的结果"断言失败，409≠200），恢复后全量重新跑绿。AC-008/AC-022 在 T-13/T-14 阶段已有直接覆盖，这轮没有重复造轮子 |
 | T-18 固定工具契约及可信 actor 注入 | 完成（2026-09-25） | **education-api 内部通道**（补齐 T-08 遗留的内部服务认证）：`auth/internalContext.ts` HMAC 签名上下文（签名算在传输字符串上，避免跨语言 JSON 序列化差异）、`withActor` 认 `X-Actor-Context`（与 cookie 互斥、role 以库为准）、`denyAgentChannel`（确认申请/回应方案/`/teacher/*` 对 Agent 通道 403）、仅已认证的 Agent 通道跳过 CSRF Origin 检查；12 个新测试，反向验证（去掉 confirm 的 deny 则变红）。**education-agent `tools/`**：`context.py`（校验+跨语言测试向量）、`client.py`（绑定 ctx 的客户端，无"以谁的身份"参数）、`spec.py`/`contracts.py`（7 个工具固定契约，`extra=forbid`，无任何身份字段，确认卡走 `artifacts` 不进模型）、`runtime.py` 的 `ToolRuntime.call`（预算→过期→白名单→参数→绑定身份执行→超时→错误映射→成功，逐关卡带注释；**由 Claude 实现**，学员改为以读懂设计为主，见 §4 备注）。**验证**：`uv run pytest` 34 passed、4 skipped（联调用例默认跳过）；**反向验证**：去掉过期检查/去掉 wait_for 超时/兜底异常回显文本各使对应用例变红；"参数错误回显 pydantic 详情"这一变异最初存活（测试只查 `model_view()`），已加强为同时断言 `ToolResult` 本身，再验证变红。**真实联调**（`tests/test_live_api.py`，需 `EDU_LIVE_API_URL`+`INTERNAL_AUTH_SECRET`，只读且可重复）：Python 签发的工作证被真实 education-api 认可；li/wang 各只看到自己的报名；li 用 wang 的 enrollmentId 查课表得 NOT_FOUND；错误密钥签的证被拒；用 Agent 工作证直接打 confirm 与 `/teacher/*` 均 403。另手动跑通 6 个读工具（响应形状与契约一致）和唯一的写工具 `prepareApplication`（草稿 revision=1、确认卡只在 artifacts，模型可见结果不含 confirmationId；临时草稿已清理）。**限制**：BFF 签发端点尚不存在（T-20），联调里由 Python 测试代码充当 BFF；一次运行超过 60 秒的工作证过期与"恢复时重签"待 T-20；HMAC 对称密钥的生产隐患见已知局限 |
+| T-19 route/query/draft/respond 图、任务状态及确认恢复 | 进行中：第 1/3 步（模型层）完成 | **第 1 步**：`education_agent/model/`——`base.py`（`ChatModel` 协议、`ModelReply`/`ToolCall`，消息用 OpenAI 风格普通字典）、`scripted.py`（mock，按脚本回复并记录收到的内容，脚本耗尽即断言失败）、`langchain_adapter.py`（`ChatOpenAI` 接任意 OpenAI 兼容端点，LangChain 只存在于此文件）。`tests/test_model_layer.py` 8 个用例，用 `MockTransport` 充当端点断言真实请求体（tools 只含名字/描述/参数、不含身份字段；历史里 assistant 的 tool_calls 与 tool 消息的 tool_call_id 正确对应）。反向验证 5 个变异（丢 invalid_tool_calls、坏参数当空参数、写死 tool_call_id、无工具时也 bind_tools、丢历史里的 tool_calls）均被抓到。全量 `uv run pytest` 42 passed、4 skipped。**待做**：第 2 步图骨架（含 ReAct 内循环）、第 3 步确认 interrupt/恢复（AC-004/011，需在真实 Postgres checkpointer 上验证 token 不落库）。**限制**：未连真实模型，微调 Qwen 经 OpenAI 兼容接口能否稳定返回 tool_calls 待接入时验证 |
 
 ## 2. T-01 基线盘点
 
@@ -230,6 +231,22 @@
 - 演进：需要带 confirmationId 时，新增类型名（如 need_confirm_v2）而不是改旧 value 或加可选旁路字段；客户端仅为自有前端/Agent 时可同步升级，无需版本体系。
 - type 取值用枚举集中定义；真正唯一来源应是 openapi.yaml（oneOf+discriminator），T-06 后引入类型生成再收敛。
 
+### T-19 设计决定（含 LangChain 调研）
+
+| 决定 | 理由 |
+|---|---|
+| 图用 LangGraph `StateGraph` 自建，不用 `create_react_agent`/`create_agent` 当整体 | design.md 是固定流程 `load_authorized_context → route → 分支 → respond`，需要 interrupt 确认，不是"模型自由循环" |
+| 分两层：外层图决定环节/可用工具/何时中断；内层是各分支节点里的 ReAct 循环（模型→工具→模型，受 `RunBudget` 限制） | 多轮聊天靠 thread+checkpoint 保存历史，不靠循环；循环只负责"这一环节里模型自己决定调几次" |
+| 内循环自己写（约 20 行），拿到 artifacts 里的确认卡就停下交给外层 interrupt；`create_agent`+`content_and_artifact` 留作之后的对照实验 | 需要在循环内部拦截确认卡、按节点暴露工具子集、预算统一记账；对照实验为学员积累 LangChain 实操 |
+| 工具执行继续用自研 `ToolRuntime`，不用 `ToolNode` | 实测（LangChain 1.x，隔离脚本）：参数校验失败时默认回填 `Error invoking tool ... with kwargs {模型传入的原值}`（会回显模型输入）；普通异常默认直接抛给调用方（不进模型，但会让图崩溃）。ToolRuntime 把两者都收成错误码 |
+| 模型层：自有 `ChatModel` 协议 + mock 实现 + LangChain 适配器（`ChatOpenAI`），LangChain 只出现在适配器文件 | 学员想积累 LangChain 经验；适配层让图状态/checkpoint 只有普通字典，不背 LangChain 消息类型与版本耦合 |
+| **RunContext 用 LangGraph 的 `context=` 通道传入，不放 `config["configurable"]`** | 实测（InMemorySaver）：configurable 里的自定义键会被复制进 checkpoint 的 metadata（token 落库）；`context=` 不落库，且恢复时可传新 token。第 3 步会在真实 Postgres checkpointer 上复验 |
+| 模型返回坏 JSON 参数 → 转成带 `__unparsable_arguments__` 标记的 ToolCall | 不丢弃（模型以为调用过）、不当空参数（会误调无参工具）；被 `extra=forbid` 拦成 INVALID_ARGS，复用已有失败通路 |
+
+**更正记录**：曾凭函数签名推测"ToolNode 默认把异常文本回填给模型"，实测不成立（见上，普通异常直接抛出）。结论以实测为准。
+**注意**：`langchain-openai` 默认注入自定义 transport，会关闭 httpx 对系统代理的自动识别；开发环境走代理时需传入自己的 `http_async_client`。
+
+
 ### 已知局限
 - 校验只覆盖契约自身一致性与样例；尚无从 openapi 生成 TS/Python 类型（T-06+ 引入时补），当前消费方需手工对照。
 - （已解决）education-api 全量测试并行时约 1/3 概率出现不相关文件的 "terminating connection due to administrator command"（各测试文件各自建/删临时库，并行时互相干扰）。改为 `--test-concurrency=1` 串行后连续 8 次 0 失败，耗时 ~1s→~5s；根因未深究（怀疑 CREATE/DROP DATABASE 并行），但症状已消除。
@@ -266,4 +283,4 @@ L-00 独立练习在 T-04 后开始。
 ## 5. 用时与下次入口
 - 用时（M0，学员活跃时间，据会话时间戳估算）：约 9h，区间 7～11h。下限 7.2h 为间隔 ≤60 分钟的部分；第一晚 09-20 21:50→23:09（70 分钟）与 23:09→02:00（171 分钟）两段长空档无法确认是否在学习，故有上浮区间。无法拆分实现与学习用时（边做边讲）。M0 计划 14h（实现估时），本轮多数实现由 Claude 完成。排期不调整，M1 结束后用同样方法再校准。
 - M0 的 T-01～T-05 已完成。下次入口：M0 验收汇报与排期重估，之后等"继续"进入 M1。L-00 已独立通过（含较多提示），M3 前需无提示复现。
-- M2（T-12～T-17）已完成，实现验收见 §1；L-02 讲解已过、独立练习待做（见 §4）。M3 的 T-18（工具契约+可信 actor 注入+内部服务认证）已完成。学员在 T-18 开始时表示手写只有教学意义、Python 语法不熟，改为"我实现、逐段注释、讲清设计"；讲解中澄清了三点：工作证只回答"是谁"而不含操作对象（对象由工具参数给出、由业务 API 按 actor 授权）；固定的只是边界（身份/授权/副作用需确认），理解和消歧交给模型；框架管通用机制（循环、schema、并行、限次），身份注入与出口收口无论用不用框架都要自己做。下次入口：T-19（route/query/draft/respond 图与确认恢复；届时评估是否用 ToolNode/create_agent 及模型调用层）。
+- M2（T-12～T-17）已完成，实现验收见 §1；L-02 讲解已过、独立练习待做（见 §4）。M3 的 T-18（工具契约+可信 actor 注入+内部服务认证）已完成。学员在 T-18 开始时表示手写只有教学意义、Python 语法不熟，改为"我实现、逐段注释、讲清设计"；讲解中澄清了三点：工作证只回答"是谁"而不含操作对象（对象由工具参数给出、由业务 API 按 actor 授权）；固定的只是边界（身份/授权/副作用需确认），理解和消歧交给模型；框架管通用机制（循环、schema、并行、限次），身份注入与出口收口无论用不用框架都要自己做。T-19 已决定：自建 StateGraph + 自写内循环 + 自研 ToolRuntime + LangChain 仅作模型适配层（见 §3 T-19 设计决定）。下次入口：T-19 第 2 步（图骨架与 ReAct 内循环，先用 mock 模型）。
