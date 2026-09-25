@@ -231,6 +231,7 @@
 
 ### 已知局限
 - 校验只覆盖契约自身一致性与样例；尚无从 openapi 生成 TS/Python 类型（T-06+ 引入时补），当前消费方需手工对照。
+- （已解决）education-api 全量测试并行时约 1/3 概率出现不相关文件的 "terminating connection due to administrator command"（各测试文件各自建/删临时库，并行时互相干扰）。改为 `--test-concurrency=1` 串行后连续 8 次 0 失败，耗时 ~1s→~5s；根因未深究（怀疑 CREATE/DROP DATABASE 并行），但症状已消除。
 - mock/real 目前只有 `.env.example` 中的 `EDUCATION_MODE` 占位，尚无代码消费。
 
 ## 4. 学习表
