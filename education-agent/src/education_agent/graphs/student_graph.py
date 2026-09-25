@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Annotated, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
@@ -117,6 +118,7 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
             result = await run_tool_loop(
                 model=model, tools=branch_tools, ctx=runtime.context.ctx, budget=runtime.context.budget,
                 messages=[_system(prompt), *state["messages"]],
+                emit=get_stream_writer(),  # 自定义流通道：调用方用 stream_mode="custom" 才会收到；用 ainvoke 时相当于空操作
             )
             return {
                 "messages": result.new_messages, "stop_reason": result.stop,

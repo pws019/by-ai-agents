@@ -7,6 +7,7 @@
 原因：消息历史会进入图状态、被 checkpoint 持久化。普通字典天然可 JSON 序列化，
 不会把某个库的类型和版本永久地写进数据库；也让换实现不需要动图和测试。
 """
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -30,7 +31,14 @@ class ModelReply:
     tool_calls: tuple[ToolCall, ...] = ()
 
 
+OnText = Callable[[str], None]
+
+
 class ChatModel(Protocol):
-    async def chat(self, messages: list[Message], tools: list[dict]) -> ModelReply:
-        """tools 就是 ToolRuntime.schemas() 的返回值（name/description/parameters）。传空列表表示这一轮不允许调工具。"""
+    async def chat(self, messages: list[Message], tools: list[dict], on_text: OnText | None = None) -> ModelReply:
+        """tools 就是 ToolRuntime.schemas() 的返回值（name/description/parameters）。传空列表表示这一轮不允许调工具。
+
+        on_text：给了就逐段回调模型正在生成的文本（用于流式输出），不给就等完整结果。
+        无论哪种，返回的都是完整的 ModelReply——流式只是"边生成边通知"，不改变返回值。
+        """
         ...

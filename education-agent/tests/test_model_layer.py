@@ -128,3 +128,81 @@ async def test_unparsable_arguments_are_rejected_by_tool_runtime_as_invalid_args
     res = await rt.call("getMyEnrollment", {UNPARSABLE_ARGS_KEY: True}, ctx, RunBudget())
     assert (res.ok, res.error_code) == (False, "INVALID_ARGS")
     assert sent == []
+
+
+# ---- 流式 ---------------------------------------------------------------------------------
+
+def sse(*deltas: dict) -> httpx.Response:
+    """OpenAI 兼容的流式响应：每个 delta 一条 data 行，最后是 finish 与 [DONE]。"""
+    def chunk(delta: dict, finish=None) -> str:
+        body = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        return f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
+
+    text = "".join(chunk(d) for d in deltas) + chunk({}, "stop") + "data: [DONE]\n\n"
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=text.encode())
+
+
+def streaming_model(*deltas: dict):
+    requests: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(req.content))
+        return sse(*deltas)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return create_langchain_model("http://model.test/v1", "k", "m", http_async_client=client), requests
+
+
+async def test_streamed_text_is_delivered_piece_by_piece_and_returned_in_full():
+    model, requests = streaming_model({"role": "assistant", "content": "你"}, {"content": "好，"}, {"content": "世界"})
+    pieces: list[str] = []
+    reply = await model.chat([{"role": "user", "content": "hi"}], [], on_text=pieces.append)
+    assert pieces == ["你", "好，", "世界"]
+    assert reply == ModelReply(text="你好，世界", tool_calls=())
+    assert requests[0]["stream"] is True
+
+
+async def test_streamed_tool_call_arguments_arrive_in_chunks_and_are_merged_into_valid_args():
+    model, _ = streaming_model(
+        {"role": "assistant", "content": None, "tool_calls": [{"index": 0, "id": "call_9", "type": "function", "function": {"name": "getMySchedule", "arguments": ""}}]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": '{"enrollment'}}]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": 'Id": "E-1"}'}}]},
+    )
+    pieces: list[str] = []
+    reply = await model.chat([{"role": "user", "content": "课表"}], [{"name": "getMySchedule", "description": "d", "parameters": {"type": "object", "properties": {}}}], on_text=pieces.append)
+    assert pieces == [], "纯工具调用没有文本，不该回调"
+    assert reply.tool_calls == (ToolCall(id="call_9", name="getMySchedule", args={"enrollmentId": "E-1"}),)
+
+
+async def test_streamed_unparsable_arguments_are_still_surfaced_as_invalid_not_dropped():
+    model, _ = streaming_model(
+        {"role": "assistant", "content": None, "tool_calls": [{"index": 0, "id": "call_9", "type": "function", "function": {"name": "getMyEnrollment", "arguments": ""}}]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": "{not valid json"}}]},
+    )
+    reply = await model.chat([{"role": "user", "content": "x"}], [{"name": "getMyEnrollment", "description": "d", "parameters": {"type": "object", "properties": {}}}], on_text=lambda _t: None)
+    (call,) = reply.tool_calls
+    assert call.name == "getMyEnrollment" and call.args == {UNPARSABLE_ARGS_KEY: True}
+
+
+async def test_scripted_model_streams_in_chunks_when_asked():
+    m = ScriptedModel([ModelReply(text="abcdefghij")], chunk_size=4)
+    pieces: list[str] = []
+    reply = await m.chat([], [], on_text=pieces.append)
+    assert pieces == ["abcd", "efgh", "ij"] and reply.text == "abcdefghij" and m.streamed == [True]
+
+
+async def test_streamed_no_arg_call_with_empty_argument_string_is_valid_not_flagged():
+    model, _ = streaming_model(
+        {"role": "assistant", "content": None, "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "getMyEnrollment", "arguments": ""}}]},
+    )
+    reply = await model.chat([{"role": "user", "content": "x"}], [{"name": "getMyEnrollment", "description": "d", "parameters": {"type": "object", "properties": {}}}], on_text=lambda _t: None)
+    assert reply.tool_calls == (ToolCall(id="call_1", name="getMyEnrollment", args={}),)
+
+
+async def test_streamed_arguments_that_are_valid_json_but_not_an_object_are_flagged():
+    model, _ = streaming_model(
+        {"role": "assistant", "content": None, "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "getMyEnrollment", "arguments": "[1, 2]"}}]},
+    )
+    reply = await model.chat([{"role": "user", "content": "x"}], [{"name": "getMyEnrollment", "description": "d", "parameters": {"type": "object", "properties": {}}}], on_text=lambda _t: None)
+    assert reply.tool_calls[0].args == {UNPARSABLE_ARGS_KEY: True}

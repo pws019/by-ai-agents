@@ -376,3 +376,47 @@ async def test_a_new_message_while_paused_starts_a_new_turn_instead_of_hanging()
     assert out["reply"] == "你好，有什么可以帮你？" and "__interrupt__" not in out
     assert (await h.snapshot()).next == ()
     assert [r.method for r in h.requests] == ["POST"], "旧草稿留在业务库里，没有被重复创建"
+
+
+# ---- 流式事件 -----------------------------------------------------------------------------
+
+async def collect_events(h: Harness, text: str, thread: str = "t1") -> list[dict]:
+    events = []
+    async for e in h.graph.astream(
+        {"messages": [{"role": "user", "content": text}]}, {"configurable": {"thread_id": thread}},
+        context=RunScope(ctx(), RunBudget()), stream_mode="custom",
+    ):
+        events.append(e)
+    return events
+
+
+async def test_events_stream_tool_status_and_text_deltas_and_only_the_final_pieces_are_the_reply():
+    h = Harness([
+        route("query"),
+        ModelReply(tool_calls=(call("getMyEnrollment", {}),)),
+        ModelReply(text="你的下一课是第 2 课。"),
+    ])
+    events = await collect_events(h, "我下节课是什么？")
+    assert [e for e in events if e["type"] == "tool.status"] == [
+        {"type": "tool.status", "name": "getMyEnrollment", "status": "running"},
+        {"type": "tool.status", "name": "getMyEnrollment", "status": "ok"},
+    ]
+    assert "".join(e["text"] for e in events if e["type"] == "message.delta") == "你的下一课是第 2 课。"
+    assert h.model.streamed == [False, True, True], "分类调用不流式（它的输出只是内部标签，不该出现在给用户的流里）"
+
+
+async def test_events_carry_no_secrets_arguments_or_confirmation_card():
+    h = Harness([*DRAFT_SCRIPT], checkpointer=InMemorySaver())
+    events = await collect_events(h, "我想转班")
+    dumped = json.dumps(events, ensure_ascii=False)
+    assert TOKEN not in dumped and CONFIRMATION_ID not in dumped and ENROLLMENT not in dumped
+    assert all(set(e) <= {"type", "name", "status", "text"} for e in events)
+
+
+async def test_emitting_events_does_not_change_what_ainvoke_returns():
+    # 同一段脚本：用 ainvoke（无事件订阅）和用 astream（订阅事件）得到的最终回答一致。
+    script = lambda: [route("query"), ModelReply(text="你好呀")]  # noqa: E731
+    plain = await Harness(script()).say("hi")
+    streamed_h = Harness(script())
+    events = await collect_events(streamed_h, "hi")
+    assert plain["reply"] == "你好呀" and "".join(e["text"] for e in events) == "你好呀"
