@@ -44,3 +44,12 @@ export async function revokeSession(db: Db, token: string): Promise<void> {
     .set({ revokedAt: new Date() })
     .where(and(eq(sessions.tokenHash, sha256Hex(token)), isNull(sessions.revokedAt)));
 }
+
+/** 按 id 取用户。内部上下文里的 actorId 只是"BFF 声称的身份"，业务 API 仍要回库确认这个人存在、角色一致。 */
+export async function resolveUserById(db: Db, userId: string): Promise<SessionUser | null> {
+  const [row] = await db
+    .select({ id: users.id, loginName: users.loginName, displayName: users.displayName, role: users.role })
+    .from(users)
+    .where(eq(users.id, userId));
+  return row ?? null;
+}

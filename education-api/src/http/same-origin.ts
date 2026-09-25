@@ -8,6 +8,9 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export function requireSameOrigin(allowedOrigin: string) {
   return async (c: Context, next: Next) => {
+    // Agent 通道靠签名头认证，不靠浏览器自动附带的 cookie，不存在 CSRF 问题；它是服务端到服务端的调用，
+    // 本来也不会带 Origin。这里只跳过"已经被内部签名认证过"的请求，未认证的仍然走下面的检查。
+    if (c.get("via") === "agent") return next();
     if (WRITE_METHODS.has(c.req.method)) {
       const origin = c.req.header("Origin");
       // 同源导航型请求浏览器不一定带 Origin（部分场景退化为 Referer），故 Origin 缺失时退而看 Referer 前缀；

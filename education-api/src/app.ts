@@ -3,7 +3,7 @@
 // → 挂路由，路由内部按需 requireAuth/requireRole。
 import { Hono } from "hono";
 import type pg from "pg";
-import { withActor } from "./auth/middleware.js";
+import { denyAgentChannel, withActor } from "./auth/middleware.js";
 import { createDb } from "./db/pool.js";
 import { withRequestId } from "./http/request-id.js";
 import { requireSameOrigin } from "./http/same-origin.js";
@@ -16,17 +16,22 @@ import { createTeacherRoutes } from "./routes/teacher.js";
 
 const API_PREFIX = "/api/v1";
 
-export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string }): Hono {
+export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string; internalAuthSecret?: string }): Hono {
   const app = new Hono();
   const allowedOrigin = opts?.allowedOrigin ?? process.env.ALLOWED_ORIGIN ?? "http://localhost:5173";
+  const internalAuthSecret = opts?.internalAuthSecret ?? process.env.INTERNAL_AUTH_SECRET;
   const db = createDb(pool);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
   const api = new Hono();
   api.use(withRequestId);
-  api.use(withActor(db));
+  api.use(withActor(db, internalAuthSecret));
   api.use(requireSameOrigin(allowedOrigin));
+  // 只能由用户本人在界面上完成的操作，Agent 通道一律拒绝（必须在挂路由之前注册）。
+  api.use("/teacher/*", denyAgentChannel);
+  api.post("/applications/:applicationId/confirm", denyAgentChannel);
+  api.post("/applications/:applicationId/proposal-response", denyAgentChannel);
   api.route("/", createAuthRoutes(db));
   api.route("/", createApplicationRoutes(db));
   api.route("/", createCatalogRoutes(db));

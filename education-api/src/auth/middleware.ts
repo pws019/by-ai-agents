@@ -5,13 +5,18 @@ import type { Context, Next } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import type { Db } from "../db/pool.js";
 import { errorJson } from "../http/errors.js";
-import { resolveSession, type SessionUser } from "./session.js";
+import { verifyInternalContext } from "./internalContext.js";
+import { resolveSession, resolveUserById, type SessionUser } from "./session.js";
 
 export const SESSION_COOKIE = "edu_session";
+
+export const INTERNAL_CONTEXT_HEADER = "X-Actor-Context";
 
 declare module "hono" {
   interface ContextVariableMap {
     actor: SessionUser | null;
+    /** 身份怎么来的：浏览器 session cookie，还是 Agent 服务带来的签名内部上下文。 */
+    via: "session" | "agent" | null;
   }
 }
 
@@ -31,13 +36,39 @@ export function clearSessionCookie(c: Context) {
   deleteCookie(c, SESSION_COOKIE, { path: "/" });
 }
 
-/** 挂在 app 最外层：解析 cookie → 查会话 → 挂到 c.get('actor')。之后的路由直接读，不用再碰 cookie。 */
-export function withActor(db: Db) {
+/**
+ * 挂在 app 最外层：解析身份 → 挂到 c.get('actor') / c.get('via')。之后的路由直接读。
+ * 两种来源互斥：请求带了 X-Actor-Context 就只认它（校验失败就是匿名，不回退去看 cookie）——
+ * 否则"内部头无效时悄悄改用 cookie"会让两条认证通道的边界变模糊。
+ */
+export function withActor(db: Db, internalSecret?: string) {
   return async (c: Context, next: Next) => {
-    const token = getCookie(c, SESSION_COOKIE);
-    c.set("actor", token ? await resolveSession(db, token) : null);
+    const internal = c.req.header(INTERNAL_CONTEXT_HEADER);
+    if (internal !== undefined) {
+      const ctx = internalSecret ? verifyInternalContext(internal, internalSecret) : null;
+      const user = ctx ? await resolveUserById(db, ctx.actorId) : null;
+      // 签名里的 role 只是 BFF 签发时的快照，以库里的为准；对不上说明用户被改过角色，按无效处理。
+      const ok = ctx && user && user.role === ctx.role;
+      c.set("actor", ok ? user : null);
+      c.set("via", ok ? "agent" : null);
+    } else {
+      const token = getCookie(c, SESSION_COOKIE);
+      const user = token ? await resolveSession(db, token) : null;
+      c.set("actor", user);
+      c.set("via", user ? "session" : null);
+    }
     await next();
   };
+}
+
+/**
+ * 只允许"用户本人在界面上"完成的操作（确认申请、回应方案、所有老师端点）：经 Agent 通道来的请求一律 403。
+ * 工具白名单里本来就没有这些工具，这里是第二道防线——即使以后有人加了一个通用 HTTP 工具，
+ * 或者模型提示词被注入，业务 API 这一层也不会认一个"由 Agent 代为确认"的请求（AC-004/AC-017）。
+ */
+export async function denyAgentChannel(c: Context, next: Next) {
+  if (c.get("via") === "agent") return errorJson(c, 403, "FORBIDDEN", "该操作只能由用户本人在界面上完成");
+  await next();
 }
 
 /** 挂在需要登录的路由前：没有身份直接 401，不进 handler。 */
