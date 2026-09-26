@@ -11,6 +11,7 @@ import { createSession } from "../auth/session.js";
 import { DATABASE_URL } from "../db/config.js";
 import { migrate } from "../db/migrate.js";
 import { createDb, createPool } from "../db/pool.js";
+import { dropTestDatabase } from "../testing/db.js";
 
 const migrationsDir = fileURLToPath(new URL("../db/migrations", import.meta.url));
 const dbName = `edu_test_${randomBytes(4).toString("hex")}`;
@@ -93,7 +94,7 @@ before(async () => {
 
 after(async () => {
   await pool.end();
-  await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+  await dropTestDatabase(admin, dbName);
   await admin.end();
 });
 

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { DATABASE_URL } from "./config.js";
 import { APP_SCHEMA, migrate } from "./migrate.js";
+import { dropTestDatabase } from "../testing/db.js";
 
 const migrationsDir = fileURLToPath(new URL("./migrations", import.meta.url));
 
@@ -48,7 +49,7 @@ before(async () => {
 });
 after(async () => {
   await db?.end();
-  await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+  await dropTestDatabase(admin, dbName);
   await admin.end();
 });
 

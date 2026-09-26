@@ -672,11 +672,26 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, run]
+                required: [items, run, pendingConfirmation]
                 properties:
                   items:
                     type: array
                     items: {$ref: '#/components/schemas/Message'}
+                  pendingConfirmation:
+                    description: |
+                      这个会话里待确认的申请草稿及其确认卡（形状同 application.confirmation 事件的载荷）；没有则为 null。
+                      用于断线重连后找回确认卡——它在实时事件流里发出过，但不在消息里。
+                      条件：草稿仍是 draft、由这个会话里的某次运行起草（来源取自已验签的内部工作证，不由请求体或模型指定）、
+                      确认卡未使用/未撤销/未过期；多张时取最新一张。
+                    nullable: true
+                    type: object
+                    required: [applicationId, confirmationId, revision, expiresAt, summary]
+                    properties:
+                      applicationId: {type: string, format: uuid}
+                      confirmationId: {type: string, format: uuid}
+                      revision: {type: integer, minimum: 0}
+                      expiresAt: {type: string, format: date-time}
+                      summary: {type: object, additionalProperties: true}
                   run:
                     description: 最近一次运行；从未运行过为 null。租约（90 秒）过期的运行中 run 会在读取时被判为 failed/LEASE_EXPIRED，客户端不会永远看到"生成中"。
                     nullable: true
@@ -1163,6 +1178,10 @@ components:
         id: {type: string, format: uuid}
         mode: {type: string, enum: [bot, queued, human, closed]}
         createdAt: {type: string, format: date-time}
+        title:
+          type: string
+          nullable: true
+          description: 首条用户消息截断（24 个字符，超出加省略号）；还没有消息时为 null。首版不提供改名。
     Message:
       type: object
       required: [id, role, content, createdAt]

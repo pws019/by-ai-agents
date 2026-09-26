@@ -7,6 +7,7 @@ import { createApp } from "../app.js";
 import { DATABASE_URL } from "../db/config.js";
 import { migrate } from "../db/migrate.js";
 import { createPool } from "../db/pool.js";
+import { dropTestDatabase } from "../testing/db.js";
 
 const migrationsDir = fileURLToPath(new URL("../db/migrations", import.meta.url));
 const withDb = (name: string) => {
@@ -28,7 +29,7 @@ async function withFreshApp<T>(fn: (ctx: { pool: pg.Pool; app: ReturnType<typeof
     return await fn({ pool, app: createApp(pool, { allowedOrigin: "http://localhost:5173" }) });
   } finally {
     await pool.end();
-    await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+    await dropTestDatabase(admin, dbName);
     await admin.end();
   }
 }

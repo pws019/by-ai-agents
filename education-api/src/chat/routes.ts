@@ -1,6 +1,6 @@
 // 会话接口：创建/列表/读消息，以及两个会驱动 Agent 的流式接口——发消息与"确认后恢复"。
 // 所有接口都是"本人的会话"：不存在和不是本人的一律 404，不泄露别人会话是否存在。
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { requireAuth, requireRole } from "../auth/middleware.js";
@@ -8,10 +8,22 @@ import type { Db } from "../db/pool.js";
 import { conversations, messages } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import type { AgentClient, AgentEvent } from "./agentClient.js";
+import { findPendingConfirmationForConversation } from "../routes/applications.js";
 import { findOwnedConversation, latestRun, startMessageRun, startResumeRun } from "./runs.js";
 import { beginRun, type BeginResult, type RunChannel } from "./supervisor.js";
 
+// 单表查询里 drizzle 会把 ${conversations.id} 渲染成不带表名的 "id"，放进子查询就被解析成 messages 自己的 id、永远匹配不上，
+// 所以子查询里对外层会话 id 的引用必须显式带上表名。
+const OUTER_CONVERSATION_ID = sql.raw('"app"."conversations"."id"');
 const MESSAGE_PAGE = 200;
+const TITLE_MAX_CHARS = 24;
+
+// 会话标题：首条用户消息截断（首版不提供改名）。按字符而不是字节截断，不会把汉字切成两半。
+const titleOf = (content: string | null) => {
+  if (!content) return null;
+  const chars = [...content.trim()];
+  return chars.length > TITLE_MAX_CHARS ? `${chars.slice(0, TITLE_MAX_CHARS).join("")}…` : chars.join("");
+};
 const RUN_ERROR_CODES = new Set(["DEPENDENCY_UNAVAILABLE", "BUDGET_EXCEEDED", "TOOL_FAILED", "INTERNAL"]);
 
 export interface ChatDeps {
@@ -38,18 +50,23 @@ export function createConversationRoutes(db: Db, deps: ChatDeps = {}): Hono {
   app.post("/conversations", requireAuth, student, async (c) => {
     const actor = c.get("actor")!;
     const [row] = await db.insert(conversations).values({ ownerId: actor.id }).returning();
-    return c.json({ id: row!.id, mode: row!.mode, createdAt: row!.createdAt }, 201);
+    return c.json({ id: row!.id, mode: row!.mode, createdAt: row!.createdAt, title: null }, 201);
   });
 
   app.get("/conversations", requireAuth, student, async (c) => {
     const actor = c.get("actor")!;
     const rows = await db
-      .select()
+      .select({
+        id: conversations.id,
+        mode: conversations.mode,
+        createdAt: conversations.createdAt,
+        firstMessage: sql<string | null>`(select m.content from ${messages} m where m.conversation_id = ${OUTER_CONVERSATION_ID} and m.role = 'user' order by m.created_at, m.id limit 1)`,
+      })
       .from(conversations)
       .where(eq(conversations.ownerId, actor.id))
       .orderBy(desc(conversations.createdAt), desc(conversations.id))
       .limit(50);
-    return c.json({ items: rows.map((r) => ({ id: r.id, mode: r.mode, createdAt: r.createdAt })) });
+    return c.json({ items: rows.map((r) => ({ id: r.id, mode: r.mode, createdAt: r.createdAt, title: titleOf(r.firstMessage) })) });
   });
 
   // 断线后的恢复入口：已存消息 + 最近一次运行的状态（含"租约过期 → 失败"的判定，见 latestRun）。
@@ -67,6 +84,8 @@ export function createConversationRoutes(db: Db, deps: ChatDeps = {}): Hono {
     return c.json({
       items: recent.reverse().map((m) => ({ id: m.id, role: m.role, content: m.content, runId: m.runId, createdAt: m.createdAt })),
       run: await latestRun(db, conversation.id),
+      // 断线重连后找回待确认的草稿：确认卡在实时流里发出过，但不在消息里。
+      pendingConfirmation: await findPendingConfirmationForConversation(db, conversation.id),
     });
   });
 

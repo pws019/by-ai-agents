@@ -120,6 +120,7 @@ export const applications = app.table("applications", {
   proposal: jsonb("proposal").$type<{ targetCohortId?: string; refundCents?: number } | null>(),
   revision: integer("revision").notNull().default(1),
   confirmedRevision: integer("confirmed_revision"),
+  sourceRunId: uuid("source_run_id"),
   ...timestamps,
 });
 

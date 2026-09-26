@@ -26,6 +26,23 @@ class DuplicateMessage extends Error {}
 
 const leaseExpression = sql`now() + make_interval(secs => ${RUN_LEASE_SECONDS})`;
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * 内部通道带来的 requestId 是否确实是"这个用户自己会话里的一次运行"。是就返回 run id，否则 null。
+ * requestId 由 BFF 签名，本来就可信；这里再核对一次归属，是为了让"来源"这个记录永远指向该用户自己的会话
+ * （测试或别的调用方用任意字符串做 requestId 时，也只是得不到来源，不会出错）。
+ */
+export async function findRunOwnedBy(db: Db, runId: string | null, ownerId: string): Promise<string | null> {
+  if (!runId || !UUID.test(runId)) return null;
+  const [row] = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .innerJoin(conversations, eq(conversations.id, runs.conversationId))
+    .where(and(eq(runs.id, runId), eq(conversations.ownerId, ownerId)));
+  return row?.id ?? null;
+}
+
 export async function findOwnedConversation(db: Db, conversationId: string, ownerId: string) {
   const [row] = await db
     .select()

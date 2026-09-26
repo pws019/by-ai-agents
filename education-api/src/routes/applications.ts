@@ -8,8 +8,9 @@ import { Hono } from "hono";
 import { requireAuth, requireRole } from "../auth/middleware.js";
 import { isUniqueViolation } from "../db/pgError.js";
 import type { Db } from "../db/pool.js";
-import { applicationEvents, applications, cohorts, confirmations, enrollmentChanges, enrollments, orders, replayEntitlements } from "../db/schema.js";
+import { applicationEvents, applications, cohorts, confirmations, enrollmentChanges, enrollments, orders, replayEntitlements, runs } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
+import { findRunOwnedBy } from "../chat/runs.js";
 import { claimIdempotencyKey, fulfillIdempotencyKey } from "../idempotency.js";
 
 type ApplicationRow = typeof applications.$inferSelect;
@@ -242,6 +243,9 @@ export function createApplicationRoutes(db: Db): Hono {
       if (!cohort) return errorJson(c, 404, "NOT_FOUND", "目标班期不存在");
     }
 
+    // 草稿来源：只有 Agent 通道、且工作证里的 runId 确实是本人会话里的运行才记录；来源由已验签的工作证决定，不是请求体。
+    const sourceRunId = c.get("via") === "agent" ? await findRunOwnedBy(db, c.get("agentRunId"), actor.id) : null;
+
     try {
       // insert 和签发确认卡包进同一个事务：如果确认卡那条 INSERT 恰好失败（比如连接中断），
       // 不能留下一张"已经存在但没有任何确认卡"的申请——那样学员连 PATCH 都摸不到入口去补救
@@ -256,6 +260,7 @@ export function createApplicationRoutes(db: Db): Hono {
             reason: body.reason,
             targetCohortId: body.targetCohortId ?? null,
             status: "draft",
+            sourceRunId,
           })
           .returning();
         const confirmation = await issueConfirmation(tx, actor.id, row!);
@@ -290,6 +295,10 @@ export function createApplicationRoutes(db: Db): Hono {
           ),
         );
       const confirmation = active ?? (await issueConfirmation(db, actor.id, existing));
+      // 同一张草稿被再次起草：把来源更新为最近这次运行，这样"待确认"会出现在学员最近说这件事的那个会话里。
+      if (sourceRunId && existing.sourceRunId !== sourceRunId) {
+        await db.update(applications).set({ sourceRunId }).where(eq(applications.id, existing.id));
+      }
       return c.json(toApplicationDraft(existing, confirmation), 200);
     }
   });
@@ -921,4 +930,37 @@ export function createApplicationRoutes(db: Db): Hono {
   });
 
   return app;
+}
+
+
+/**
+ * 某个会话里"待确认"的草稿及其确认卡（形状与契约 application.confirmation 事件的载荷一致）。
+ * 条件：草稿仍是 draft、来源是这个会话里的某次运行、确认卡未使用/未撤销/未过期。多张时取最新一张。
+ * 用于断线重连后找回确认卡——确认卡在实时事件流里发出过，但不进 messages 表。
+ */
+export async function findPendingConfirmationForConversation(db: Db, conversationId: string) {
+  const [row] = await db
+    .select({ application: applications, confirmationId: confirmations.id, expiresAt: confirmations.expiresAt })
+    .from(applications)
+    .innerJoin(runs, eq(runs.id, applications.sourceRunId))
+    .innerJoin(confirmations, eq(confirmations.applicationId, applications.id))
+    .where(
+      and(
+        eq(runs.conversationId, conversationId),
+        eq(applications.status, "draft"),
+        isNull(confirmations.usedAt),
+        isNull(confirmations.revokedAt),
+        gt(confirmations.expiresAt, sql`now()`),
+      ),
+    )
+    .orderBy(desc(applications.createdAt), desc(applications.id))
+    .limit(1);
+  if (!row) return null;
+  return {
+    applicationId: row.application.id,
+    confirmationId: row.confirmationId,
+    revision: row.application.revision,
+    expiresAt: row.expiresAt,
+    summary: summaryOf(row.application),
+  };
 }

@@ -12,6 +12,7 @@ import { createSession } from "../auth/session.js";
 import { DATABASE_URL } from "../db/config.js";
 import { migrate } from "../db/migrate.js";
 import { createDb, createPool } from "../db/pool.js";
+import { dropTestDatabase } from "../testing/db.js";
 import { createHttpAgentClient, type AgentClient, type AgentEvent, type AgentRequest, type AgentStart } from "./agentClient.js";
 import { RUN_CONTEXT_TTL_SECONDS } from "./supervisor.js";
 import { startMessageRun } from "./runs.js";
@@ -126,7 +127,7 @@ before(async () => {
 
 after(async () => {
   await pool.end();
-  await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+  await dropTestDatabase(admin, dbName);
   await admin.end();
 });
 

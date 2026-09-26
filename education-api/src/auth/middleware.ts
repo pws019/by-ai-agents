@@ -17,6 +17,8 @@ declare module "hono" {
     actor: SessionUser | null;
     /** 身份怎么来的：浏览器 session cookie，还是 Agent 服务带来的签名内部上下文。 */
     via: "session" | "agent" | null;
+    /** 仅内部通道：签名工作证里的 requestId（BFF 把它设为 runId）。不是用户或模型可以提供的值。 */
+    agentRunId: string | null;
   }
 }
 
@@ -51,11 +53,13 @@ export function withActor(db: Db, internalSecret?: string) {
       const ok = ctx && user && user.role === ctx.role;
       c.set("actor", ok ? user : null);
       c.set("via", ok ? "agent" : null);
+      c.set("agentRunId", ok ? ctx.requestId : null);
     } else {
       const token = getCookie(c, SESSION_COOKIE);
       const user = token ? await resolveSession(db, token) : null;
       c.set("actor", user);
       c.set("via", user ? "session" : null);
+      c.set("agentRunId", null);
     }
     await next();
   };
