@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import type pg from "pg";
 import { denyAgentChannel, withActor } from "./auth/middleware.js";
+import { createConversationRoutes } from "./chat/routes.js";
 import { createDb } from "./db/pool.js";
 import { withRequestId } from "./http/request-id.js";
 import { requireSameOrigin } from "./http/same-origin.js";
@@ -30,12 +31,16 @@ export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string; intern
   api.use(requireSameOrigin(allowedOrigin));
   // 只能由用户本人在界面上完成的操作，Agent 通道一律拒绝（必须在挂路由之前注册）。
   api.use("/teacher/*", denyAgentChannel);
+  // 会话是用户与 BFF 之间的东西；Agent 自己有 checkpoint，不需要也不该读写业务库里的会话。
+  api.use("/conversations", denyAgentChannel);
+  api.use("/conversations/*", denyAgentChannel);
   api.post("/applications/:applicationId/confirm", denyAgentChannel);
   api.post("/applications/:applicationId/proposal-response", denyAgentChannel);
   api.route("/", createAuthRoutes(db));
   api.route("/", createApplicationRoutes(db));
   api.route("/", createCatalogRoutes(db));
   api.route("/", createCohortRoutes(db));
+  api.route("/", createConversationRoutes(db));
   api.route("/", createMeRoutes(db));
   api.route("/", createTeacherRoutes(db));
 

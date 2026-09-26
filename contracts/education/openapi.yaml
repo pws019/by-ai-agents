@@ -672,12 +672,21 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, runStatus]
+                required: [items, run]
                 properties:
                   items:
                     type: array
                     items: {$ref: '#/components/schemas/Message'}
-                  runStatus: {type: string, enum: [idle, running]}
+                  run:
+                    description: 最近一次运行；从未运行过为 null。租约（90 秒）过期的运行中 run 会在读取时被判为 failed/LEASE_EXPIRED，客户端不会永远看到"生成中"。
+                    nullable: true
+                    type: object
+                    required: [id, kind, status, errorCode]
+                    properties:
+                      id: {type: string, format: uuid}
+                      kind: {type: string, enum: [message, resume]}
+                      status: {type: string, enum: [running, completed, failed]}
+                      errorCode: {type: string, nullable: true}
         '404': {$ref: '#/components/responses/NotFound'}
     post:
       tags: [chat]

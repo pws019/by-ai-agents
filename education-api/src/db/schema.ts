@@ -174,3 +174,31 @@ export const replayEntitlements = app.table("replay_entitlements", {
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const conversations = app.table("conversations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull(),
+  mode: text("mode").notNull().default("bot").$type<"bot" | "queued" | "human" | "closed">(),
+  ...timestamps,
+});
+
+export const runs = app.table("runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  conversationId: uuid("conversation_id").notNull(),
+  kind: text("kind").notNull().$type<"message" | "resume">(),
+  status: text("status").notNull().$type<"running" | "completed" | "failed">(),
+  errorCode: text("error_code"),
+  leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+});
+
+export const messages = app.table("messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  conversationId: uuid("conversation_id").notNull(),
+  role: text("role").notNull().$type<"user" | "assistant" | "teacher" | "system">(),
+  content: text("content").notNull(),
+  clientMessageId: text("client_message_id"),
+  runId: uuid("run_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
