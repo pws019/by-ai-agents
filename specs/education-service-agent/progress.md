@@ -46,7 +46,7 @@ education-api 全量 144 passed。
 **真实端到端**（education-api :8400 + Python Agent :8500 + 真实 Postgres checkpointer，模型为确定性假模型，脚本在会话 scratchpad，未入库）：Node 签发的工作证被 Python 验签并用于回调业务 API ✓；查询流：`tool.status(started/succeeded)` + 8 段 `message.delta` + `message.completed`，delta 拼接与 completed.text 一致 ✓；
 同一 clientMessageId 重复提交 → 回放同一 messageId，0.01 秒（重新生成需 3 秒以上）✓；起草退费 → `application.confirmation`，业务库状态 draft（AC-004）✓；未确认就 resume → "还没有看到你的确认…仍是草稿"，再 resume → 409 INVALID_STATE ✓；生成中再发一条 → 409 RUN_IN_PROGRESS ✓；
 **断线**：读到第一段输出就断开，服务端仍跑完，重连后 GET 查到 run=completed 与完整助手消息（AC-021）✓；杀掉 Agent 进程 → 503 DEPENDENCY_UNAVAILABLE，run=failed，用户消息保留，锁已释放 ✓。联调数据已清理（会话/运行/消息/草稿/checkpoint 均为 0）。
-**限制**：①`RunChannel` 在 BFF 进程内存里，单进程有效（多实例需换成外部通道）；②运行时长受工作证 120 秒有效期约束，超过则以"登录已过期"话术结束；③重复提交回放的是文本，`application.confirmation` 确认卡不回放——断线后确认卡请从"我的申请"取（`GET /me/applications` 带确认卡）；
+**限制**：①`RunChannel` 在 BFF 进程内存里，单进程有效（多实例需换成外部通道）；②运行时长受工作证 120 秒有效期约束，超过则以"登录已过期"话术结束；③重复提交回放的是文本，`application.confirmation` 确认卡不回放——断线后确认卡请从申请详情取（`GET /applications/:id` 返回 `pendingConfirmation`，仅当确认卡未用、未撤销、未过期；列表接口 `GET /me/applications` 不带确认卡——此处曾误写为列表，已更正）；
 ④事件续租按"收到事件时且距上次续租 ≥10 秒"，Agent 长时间静默（无事件）超过 90 秒会被判过期；⑤恢复时若无待确认，业务库里会留一条 failed(NOT_AWAITING_CONFIRMATION) 的 run 记录；⑥联调用的假模型与脚本未入库，T-21 做浏览器端到端时需要一个入库的开发用模型。
 **下一步 T-21**：前端脱离 Mastra SDK，新 HTTP/SSE 适配、工具/确认卡片。、断线后仍跑完并存库、确认后恢复端点、真实端到端 |
 
