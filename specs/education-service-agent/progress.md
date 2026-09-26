@@ -48,7 +48,8 @@ education-api 全量 144 passed。
 **断线**：读到第一段输出就断开，服务端仍跑完，重连后 GET 查到 run=completed 与完整助手消息（AC-021）✓；杀掉 Agent 进程 → 503 DEPENDENCY_UNAVAILABLE，run=failed，用户消息保留，锁已释放 ✓。联调数据已清理（会话/运行/消息/草稿/checkpoint 均为 0）。
 **限制**：①`RunChannel` 在 BFF 进程内存里，单进程有效（多实例需换成外部通道）；②运行时长受工作证 120 秒有效期约束，超过则以"登录已过期"话术结束；③重复提交回放的是文本，`application.confirmation` 确认卡不回放——断线后确认卡请从申请详情取（`GET /applications/:id` 返回 `pendingConfirmation`，仅当确认卡未用、未撤销、未过期；列表接口 `GET /me/applications` 不带确认卡——此处曾误写为列表，已更正）；
 ④事件续租按"收到事件时且距上次续租 ≥10 秒"，Agent 长时间静默（无事件）超过 90 秒会被判过期；⑤恢复时若无待确认，业务库里会留一条 failed(NOT_AWAITING_CONFIRMATION) 的 run 记录；⑥联调用的假模型与脚本未入库，T-21 做浏览器端到端时需要一个入库的开发用模型。
-**下一步 T-21**：前端脱离 Mastra SDK，新 HTTP/SSE 适配、工具/确认卡片。、断线后仍跑完并存库、确认后恢复端点、真实端到端 |
+**下一步 T-21**：前端脱离 Mastra SDK，新 HTTP/SSE 适配、工具/确认卡片。
+**T-21 待一并设计的开放项（用户 2026-09-26 确认留到 T-21）**：断线重连后如何找回"待确认的申请草稿"及其确认卡。现状：确认卡只在实时事件流里发出，不入 messages 表；重复提交回放只有文本；`conversations` 与申请之间没有关联（不知道哪张草稿是在哪个会话里起草的）。候选：给 `GET /conversations/:id/messages` 增加 `pendingConfirmation`（需要会话↔申请关联，如 applications 增加 source_conversation_id 或 runs 记录产出的申请）；或前端断线后自行从申请详情取。设计时同时决定是否让 Agent 起草时把 conversationId 传给业务 API。、断线后仍跑完并存库、确认后恢复端点、真实端到端 |
 
 ## 2. T-01 基线盘点
 
