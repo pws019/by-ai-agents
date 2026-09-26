@@ -24,7 +24,7 @@
     "edu:infra:down": "docker compose --env-file infra/education/.env -f infra/education/compose.yaml down",
     "setup:education": "uv sync --project education-agent && npm ci --prefix contracts/education",
     "contracts:check": "npm test --prefix contracts/education",
-    "test:education": "npm test --workspace=education-agent && npm test --workspace=education-api"
+    "test:education": "npm test --workspace=education-agent && npm test --workspace=education-api && npm test --workspace=customer-frontend"
   },
   "devDependencies": {
     "patch-package": "^8.0.1",
