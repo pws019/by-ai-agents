@@ -4,7 +4,11 @@
   "tasks": {
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": [
+        "EDUCATION_MODE", "INTERNAL_AUTH_SECRET", "MODEL_BASE_URL", "MODEL_API_KEY", "MODEL_NAME",
+        "BUSINESS_API_URL", "AGENT_BASE_URL", "AGENT_HOST", "AGENT_PORT", "ALLOWED_ORIGIN", "EDUCATION_DATABASE_URL"
+      ]
     },
     "typecheck": {
       "cache": false

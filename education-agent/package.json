@@ -4,7 +4,7 @@
   "private": true,
   "description": "Python 服务的 npm 包装，仅为让 turbo 能统一启动；依赖由 uv.lock 管理",
   "scripts": {
-    "dev": "uv run uvicorn education_agent.app:app --app-dir src --host 127.0.0.1 --port 8300 --reload",
+    "dev": "PYTHONPATH=src uv run python -m education_agent.main",
     "test": "uv run pytest -q"
   }
 }
