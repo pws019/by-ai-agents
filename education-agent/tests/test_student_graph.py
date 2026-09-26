@@ -29,7 +29,7 @@ from education_agent.tools.spec import RunBudget
 
 ENROLLMENT = "00000000-0000-0000-0000-000000000501"
 TOKEN = "SECRET-SIGNED-TOKEN"
-CONFIRMATION_ID = "conf-SECRET-1"
+CONFIRMATION_ID = "00000000-0000-0000-0000-00000000c0f1"
 APP_ID = "00000000-0000-0000-0000-000000000a01"
 
 
@@ -47,7 +47,12 @@ def business_api(req: httpx.Request) -> httpx.Response:
         return httpx.Response(201, json={
             "id": APP_ID, "revision": 1, "status": "draft",
             "summary": {"type": "transfer", "enrollmentId": ENROLLMENT, "reason": "冲突", "targetCohortId": None, "refundCents": None},
-            "confirmation": {"confirmationId": CONFIRMATION_ID, "applicationId": APP_ID, "revision": 1},
+            # 与真实业务 API 返回的确认卡同形状（字段集合以契约 application.confirmation 为准）。
+            "confirmation": {
+                "confirmationId": CONFIRMATION_ID, "applicationId": APP_ID, "revision": 1,
+                "expiresAt": "2030-01-01T00:00:00.000Z",
+                "summary": {"type": "transfer", "enrollmentId": ENROLLMENT, "reason": "冲突", "targetCohortId": None, "refundCents": None},
+            },
         })
     return httpx.Response(404, json={"error": {"code": "NOT_FOUND", "message": "x"}})
 
@@ -398,8 +403,8 @@ async def test_events_stream_tool_status_and_text_deltas_and_only_the_final_piec
     ])
     events = await collect_events(h, "我下节课是什么？")
     assert [e for e in events if e["type"] == "tool.status"] == [
-        {"type": "tool.status", "name": "getMyEnrollment", "status": "running"},
-        {"type": "tool.status", "name": "getMyEnrollment", "status": "ok"},
+        {"type": "tool.status", "tool": "getMyEnrollment", "status": "started"},
+        {"type": "tool.status", "tool": "getMyEnrollment", "status": "succeeded"},
     ]
     assert "".join(e["text"] for e in events if e["type"] == "message.delta") == "你的下一课是第 2 课。"
     assert h.model.streamed == [False, True, True], "分类调用不流式（它的输出只是内部标签，不该出现在给用户的流里）"
@@ -410,7 +415,7 @@ async def test_events_carry_no_secrets_arguments_or_confirmation_card():
     events = await collect_events(h, "我想转班")
     dumped = json.dumps(events, ensure_ascii=False)
     assert TOKEN not in dumped and CONFIRMATION_ID not in dumped and ENROLLMENT not in dumped
-    assert all(set(e) <= {"type", "name", "status", "text"} for e in events)
+    assert all(set(e) <= {"type", "tool", "status", "text"} for e in events)
 
 
 async def test_emitting_events_does_not_change_what_ainvoke_returns():

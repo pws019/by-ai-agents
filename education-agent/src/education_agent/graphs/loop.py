@@ -8,7 +8,7 @@
   预算耗尽后循环立即停止。所以最多循环 max_calls 轮，不需要另设"最大轮数"。
 - 模型每提出一个 tool_call，历史里就一定有一条对应的 tool 消息（哪怕是被跳过/被拒绝的），
   否则下一次请求会被模型接口当作非法历史拒绝。
-- 事件只是"边跑边通知"：emit 给了就发 message.delta（模型正在生成的文本）和 tool.status（只有工具名和状态，
+- 事件只是"边跑边通知"：emit 给了就发 message.delta（模型正在生成的文本）和 tool.status（载荷 {tool, status}，只有工具名和状态，
   不含参数、结果、错误细节——脱敏），不给就静默。发不发事件不影响循环的任何行为和返回值。
 - 一出现确认卡就立刻停下，不再让模型继续说话或继续调用：模型的产出止于"草稿"（AC-004）。
 """
@@ -73,9 +73,9 @@ async def run_tool_loop(
                 add(_tool_message(call.id, {"ok": False, "error": {"code": "SKIPPED"}}))
                 continue
 
-            emit({"type": "tool.status", "name": call.name, "status": "running"})
+            emit({"type": "tool.status", "tool": call.name, "status": "started"})
             result = await tools.call(call.name, call.args, ctx, budget)
-            emit({"type": "tool.status", "name": call.name, "status": "ok" if result.ok else "failed"})
+            emit({"type": "tool.status", "tool": call.name, "status": "succeeded" if result.ok else "failed"})
             add(_tool_message(call.id, result.model_view()))  # model_view：确认卡与错误细节都不在里面
 
             if "confirmation" in result.artifacts:

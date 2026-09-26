@@ -4,9 +4,11 @@
 import json
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
+from jsonschema import Draft202012Validator
 from langgraph.checkpoint.memory import InMemorySaver
 
 from education_agent.graphs.student_graph import REPLY_NEEDS_CONFIRMATION
@@ -73,10 +75,11 @@ async def test_query_run_streams_tool_status_deltas_and_ends_with_the_full_text(
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
     events = parse_sse(r.text)
 
-    assert [e["eventId"] for e in events] == list(range(1, len(events) + 1))
+    assert [e["eventId"] for e in events] == [str(n) for n in range(1, len(events) + 1)]
     assert {e["runId"] for e in events} == {"run-42"} and {e["conversationId"] for e in events} == {CONVERSATION}
     assert events[-1]["type"] == "message.completed" and events[-1]["payload"] == {"text": "你的下一课是第 2 课。"}
-    assert [e["payload"]["status"] for e in events if e["type"] == "tool.status"] == ["running", "ok"]
+    assert [e["payload"] for e in events if e["type"] == "tool.status"] == [
+        {"tool": "getMyEnrollment", "status": "started"}, {"tool": "getMyEnrollment", "status": "succeeded"}]
     assert "".join(e["payload"]["text"] for e in events if e["type"] == "message.delta") == "你的下一课是第 2 课。"
     assert sum(e["type"] == "message.completed" for e in events) == 1
     assert c.h.requests[0].headers["X-Actor-Context"] == token(run_id="run-42"), "业务 API 收到的就是 BFF 签发的那张工作证"
@@ -149,7 +152,8 @@ async def test_failure_becomes_a_fixed_error_event_with_no_details():
 
     r = await c.run({"text": "hi"}, token(run_id="run-9"))
     events = parse_sse(r.text)
-    assert events[-1] == {"eventId": 1, "conversationId": CONVERSATION, "runId": "run-9", "type": "run.error", "payload": {"code": "INTERNAL"}}
+    assert events[-1] == {"eventId": "1", "conversationId": CONVERSATION, "runId": "run-9", "type": "run.error",
+                          "payload": {"code": "INTERNAL", "message": "服务暂时出错，请稍后重试。"}}
     assert "SECRET-PASSWORD" not in r.text and "postgresql" not in r.text
     assert not any(e["type"] == "message.completed" for e in events)
 
@@ -159,3 +163,42 @@ async def test_stream_never_contains_the_token():
     tok = token()
     r = await c.run({"text": "我想转班"}, tok)
     assert tok not in r.text and tok.split(".")[0] not in r.text
+
+
+# ---- 与契约一致 ---------------------------------------------------------------------------
+
+CONTRACT = Path(__file__).resolve().parents[2] / "contracts" / "education" / "events.schema.json"
+
+
+def contract_errors(events: list[dict]) -> list[str]:
+    """用契约里的 JSON Schema 校验每个事件。契约是唯一来源，这里不另写一份形状定义。
+    唯一的差别：契约的 message.completed 要求 messageId，那是 BFF 落库后才有的，Agent 这一跳补一个占位再校验。"""
+    validator = Draft202012Validator(json.loads(CONTRACT.read_text(encoding="utf-8")))
+    errors = []
+    for e in events:
+        if e["type"] == "message.completed":
+            e = {**e, "payload": {**e["payload"], "messageId": "filled-by-bff"}}
+        errors += [f'{e["type"]}: {err.message}' for err in validator.iter_errors(e)]
+    return errors
+
+
+async def test_every_event_kind_the_agent_emits_conforms_to_the_contract_schema():
+    query = parse_sse((await make([route("query"), ModelReply(tool_calls=(call("getMyEnrollment", {}),)), ModelReply(text="你的下一课是第 2 课。")])
+                       .run({"text": "课表"}, token())).text)
+    draft = parse_sse((await make(list(DRAFT_SCRIPT)).run({"text": "我想转班"}, token())).text)
+    kinds = {e["type"] for e in query + draft}
+    assert kinds == {"message.delta", "tool.status", "application.confirmation", "message.completed"}, "这个测试应当覆盖到 Agent 会发的全部正常事件类型"
+    assert contract_errors(query + draft) == []
+
+
+async def test_run_error_event_conforms_to_the_contract_schema():
+    from education_agent.graphs.student_graph import build_student_graph
+    from education_agent.tools.contracts import TOOL_SPECS
+    from education_agent.tools.runtime import ToolRuntime
+
+    h = Harness([], checkpointer=InMemorySaver())
+    graph = build_student_graph(ExplodingModel(), ToolRuntime(TOOL_SPECS, httpx.AsyncClient(base_url="http://api.test")), InMemorySaver())
+    c = Client(h)
+    c.http = httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(graph, SECRET)), base_url="http://agent.test")
+    events = parse_sse((await c.run({"text": "hi"}, token())).text)
+    assert [e["type"] for e in events] == ["run.error"] and contract_errors(events) == []

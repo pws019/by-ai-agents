@@ -5,8 +5,12 @@ POST /internal/runs，请求头带 BFF 签发的 X-Actor-Context，响应是 SSE
     event: <type>
     data: {"eventId", "conversationId", "runId", "type", "payload"}
 
-事件类型：message.delta、tool.status、application.confirmation、message.completed、run.error。
-message.completed 一定是最后一个正常事件，带完整文本，客户端以它为准；run.error 之后不会再有事件。
+事件的形状以 contracts/education/events.schema.json 为准（测试里直接用它校验）。事件类型：message.delta、tool.status、
+application.confirmation、message.completed、run.error。message.completed 一定是最后一个正常事件，带完整文本，客户端以它为准；
+run.error 之后不会再有事件。
+
+与契约唯一的差别：契约要求 message.completed 带 messageId，但助手消息是 BFF 落库后才有 id，所以 Agent 这一跳只带 text，
+由 BFF 落库后补上 messageId 再转发给浏览器。
 
 身份与线程（T-19 的约定在这里落地）：
 - 身份只来自验过签的工作证，请求体里没有任何"我是谁"的字段。
@@ -29,6 +33,8 @@ from .tools.context import verify_context
 from .tools.spec import RunBudget
 
 log = logging.getLogger("education_agent.server")
+
+RUN_ERROR_MESSAGE = "服务暂时出错，请稍后重试。"
 
 
 class RunRequest(BaseModel):
@@ -79,7 +85,7 @@ async def _stream_run(graph, graph_input, config, scope: RunScope, conversation_
     def frame(type_: str, payload: dict) -> str:
         nonlocal seq
         seq += 1
-        envelope = {"eventId": seq, "conversationId": conversation_id, "runId": run_id, "type": type_, "payload": payload}
+        envelope = {"eventId": str(seq), "conversationId": conversation_id, "runId": run_id, "type": type_, "payload": payload}
         return f"id: {seq}\nevent: {type_}\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"
 
     try:
@@ -95,4 +101,4 @@ async def _stream_run(graph, graph_input, config, scope: RunScope, conversation_
     except Exception:
         # 只把固定的错误码给调用方；细节（可能含内部地址、凭证）只进服务端日志，用 runId 关联。
         log.exception("run failed runId=%s", run_id)
-        yield frame("run.error", {"code": "INTERNAL"})
+        yield frame("run.error", {"code": "INTERNAL", "message": RUN_ERROR_MESSAGE})
