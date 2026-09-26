@@ -79,6 +79,19 @@ export async function startMessageRun(
   }
 }
 
+export type StartResumeResult = { kind: "started"; runId: string } | { kind: "busy"; runId: string | null };
+
+/** 开启一次"学员已在界面确认，让 Agent 恢复"的运行：没有用户消息，也就没有可去重的 clientMessageId。 */
+export async function startResumeRun(db: Db, conversationId: string): Promise<StartResumeResult> {
+  try {
+    const run = await db.transaction((tx) => openRun(tx, conversationId, "resume"));
+    return { kind: "started", runId: run.id };
+  } catch (err) {
+    if (isUniqueViolation(err)) return { kind: "busy", runId: await runningRunId(db, conversationId) };
+    throw err;
+  }
+}
+
 /** 开一个 run。调用方必须在事务里；撞上"已有运行中的 run"的唯一索引时抛唯一冲突错误。 */
 export async function openRun(tx: Pick<Db, "update" | "insert">, conversationId: string, kind: "message" | "resume") {
   await expireStaleRuns(tx, conversationId);

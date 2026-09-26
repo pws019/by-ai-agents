@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import type pg from "pg";
 import { denyAgentChannel, withActor } from "./auth/middleware.js";
+import { createHttpAgentClient, type AgentClient } from "./chat/agentClient.js";
 import { createConversationRoutes } from "./chat/routes.js";
 import { createDb } from "./db/pool.js";
 import { withRequestId } from "./http/request-id.js";
@@ -17,11 +18,16 @@ import { createTeacherRoutes } from "./routes/teacher.js";
 
 const API_PREFIX = "/api/v1";
 
-export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string; internalAuthSecret?: string }): Hono {
+export function createApp(
+  pool: pg.Pool,
+  opts?: { allowedOrigin?: string; internalAuthSecret?: string; agent?: AgentClient; heartbeatIntervalMs?: number },
+): Hono {
   const app = new Hono();
   const allowedOrigin = opts?.allowedOrigin ?? process.env.ALLOWED_ORIGIN ?? "http://localhost:5173";
   const internalAuthSecret = opts?.internalAuthSecret ?? process.env.INTERNAL_AUTH_SECRET;
   const db = createDb(pool);
+  const agentBaseUrl = process.env.AGENT_BASE_URL;
+  const agent = opts?.agent ?? (agentBaseUrl ? createHttpAgentClient(agentBaseUrl) : undefined);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -40,7 +46,7 @@ export function createApp(pool: pg.Pool, opts?: { allowedOrigin?: string; intern
   api.route("/", createApplicationRoutes(db));
   api.route("/", createCatalogRoutes(db));
   api.route("/", createCohortRoutes(db));
-  api.route("/", createConversationRoutes(db));
+  api.route("/", createConversationRoutes(db, { agent, internalSecret: internalAuthSecret, heartbeatIntervalMs: opts?.heartbeatIntervalMs }));
   api.route("/", createMeRoutes(db));
   api.route("/", createTeacherRoutes(db));
 
