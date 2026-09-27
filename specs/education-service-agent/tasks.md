@@ -43,7 +43,7 @@
 - [x] T-18（3h）固定工具契约及可信 actor 注入，参数/超时/预算。`education-agent/src/tools/`。验收：工具不可指定任意用户或审批。
 - [x] T-19（4h）实现 route/query/draft/respond 图、任务状态及确认恢复。`education-agent/src/graphs/`。验收：模型输出申请草稿，只有 UI 确认提交；AC-004/011。
 - [x] T-20（3h）会话持久化、BFF SSE 与重复消息/并发生成处理。`education-api/src/chat/`。验收：AC-021；断线可查询完成消息。
-- [ ] T-21（3h）前端脱离 Mastra SDK，新 HTTP/SSE 适配、工具/确认卡片。`customer-frontend/src/lib/`、`hooks/useChat.ts`。验收：聊天申请流程端到端通过。
+- [x] T-21（3h）前端脱离 Mastra SDK，新 HTTP/SSE 适配、工具/确认卡片。`customer-frontend/src/lib/`、`hooks/useChat.ts`。验收：聊天申请流程端到端通过。
 - [ ] T-22（3h）人工队列、claim/release、摘要及机器人暂停。`education-api/src/handoffs/`、`education-agent/src/graphs/`。验收：AC-012，重复接管状态冲突。
 - [ ] T-23（3h）老师会话工作台和学生排队状态。`customer-frontend/src/routes/`。验收：老师接管回复再归还机器人。
 - [ ] T-24（3h）mock 模型下编排、故障、取消、重启测试。`education-agent/tests/`、`tests/e2e/`。验收：AC-010/011/012/021；报告明确 mock。

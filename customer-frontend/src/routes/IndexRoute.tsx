@@ -1,7 +1,6 @@
 import { ChatPanel } from "../components/chat/ChatPanel";
 
-// 对应 "/"：全局零会话的首次访问、或点了侧边栏"新建会话"，都落到这里。
-// 不传 threadId，ChatPanel 内部按"待创建"态渲染。
+// 对应 "/"：不传 conversationId，聊天面板按"待创建"态渲染——发第一条消息时才真正建会话。
 export function IndexRoute() {
   return <ChatPanel />;
 }
