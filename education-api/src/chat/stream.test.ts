@@ -267,6 +267,15 @@ describe("断线后仍然跑完（AC-021 断线可查询完成消息）", () => 
     const body = await get.json();
     assert.deepEqual(body.items.map((m: { role: string; content: string }) => [m.role, m.content]), [["user", "hi"], ["assistant", "正在回答"]]);
     assert.equal(body.run.status, "completed");
+
+    // 断开后客户端可能按原 clientMessageId 重试：只能回放落库结果，不能再次启动 Agent。
+    const retry = await post(app, `/conversations/${conversationId}/messages`, { clientMessageId: "d1", text: "hi" });
+    assert.equal(retry.status, 200);
+    const replay = sseEvents(await retry.text());
+    assert.deepEqual(replay.map((event) => event.type), ["message.completed"]);
+    assert.equal(replay[0]!.payload.messageId, body.items[1].id);
+    assert.equal(agent.calls.length, 1);
+    assert.equal(await count("SELECT count(*) n FROM messages WHERE conversation_id = $1", [conversationId]), 2);
   });
 });
 
