@@ -21,7 +21,7 @@ export function ChatPanel({ conversationId }: ChatPanelProps) {
   // 用户点了"暂不提交"：只是本地把这张卡收起来。草稿仍在业务库里，刷新页面会再出现（不丢）。
   const [dismissedCard, setDismissedCard] = useState<string | null>(null);
 
-  const { state, loadingHistory, busy, sendMessage, retryLast, confirm } = useChat({
+  const { state, loadingHistory, busy, sendMessage, retryLast, confirm, requestHandoff } = useChat({
     conversationId,
     onCreated: (newId) => {
       // 新会话这一轮已经完整结束（消息也在本地状态里了），先让侧边栏刷新，再跳转——
@@ -48,7 +48,7 @@ export function ChatPanel({ conversationId }: ChatPanelProps) {
 
   return (
     <div className="h-full flex flex-col bg-surface">
-      <ChatHeader title={title} />
+      <ChatHeader title={title} mode={isEmptyDraft ? undefined : state.mode} busy={busy} onRequestHandoff={() => void requestHandoff()} />
 
       {isEmptyDraft ? (
         <div className="flex-1 overflow-y-auto flex flex-col">

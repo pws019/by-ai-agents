@@ -1,6 +1,6 @@
 // 聊天界面的状态与"事件 → 状态"的纯函数。没有任何副作用、不依赖 React，所以可以直接单元测试。
 // 界面拿到的永远是新的状态对象（不原地修改），React 才能可靠地感知变化。
-import type { ConfirmationCard, StreamEvent, ToolStatusValue } from "./events";
+import type { ConfirmationCard, ConversationMode, StreamEvent, ToolStatusValue } from "./events";
 
 export interface ToolStatus {
   tool: string;
@@ -25,6 +25,8 @@ export interface ChatState {
   phase: "idle" | "streaming" | "reconnecting";
   /** 给用户看的整体提示（不是某条消息的错误）。 */
   notice: string | null;
+  /** 会话此刻由谁应答：bot 机器人；queued 已请求人工、排队中；human 老师接管中；closed 已关闭。 */
+  mode: ConversationMode;
 }
 
 export interface ServerMessage {
@@ -33,7 +35,7 @@ export interface ServerMessage {
   content: string;
 }
 
-export const emptyChat = (): ChatState => ({ messages: [], pendingConfirmation: null, phase: "idle", notice: null });
+export const emptyChat = (): ChatState => ({ messages: [], pendingConfirmation: null, phase: "idle", notice: null, mode: "bot" });
 
 /** 用户发出一条消息：先把它和一条"正在生成"的助手消息放进去。用户消息的 id 就是 clientMessageId，重试时保持不变。 */
 export function startTurn(state: ChatState, clientMessageId: string, text: string): ChatState {
@@ -75,6 +77,16 @@ export function applyEvent(state: ChatState, event: StreamEvent): ChatState {
       };
     case "run.error":
       return { ...updateAssistant(state, (m) => ({ ...m, state: "error", error: event.payload.message })), phase: "idle" };
+    case "handoff.status":
+      // 排队/接管期间发的消息不会有机器人回复：把那条空的"正在生成"占位去掉，不留下永远转圈的气泡。
+      // （Agent 自己判断该转人工时，这个事件先于最终的 message.completed 到达；那时占位还没被填内容，
+      // 同样会被这里清掉——随后 message.completed 到达时 updateAssistant 找不到占位，会自动新建一条，见下方实现。）
+      return {
+        ...state,
+        mode: event.payload.mode,
+        phase: "idle",
+        messages: state.messages.filter((m) => !(m.role === "assistant" && m.state === "streaming" && m.content === "")),
+      };
     case "other":
       return state;
   }
@@ -99,10 +111,16 @@ export function withNotice(state: ChatState, notice: string | null): ChatState {
 }
 
 /** 以服务端为准重建状态：打开会话、以及断线后查询到结果时用。 */
-export function fromServer(messages: ServerMessage[], pendingConfirmation: ConfirmationCard | null, keep?: Pick<ChatState, "notice">): ChatState {
+export function fromServer(
+  messages: ServerMessage[],
+  pendingConfirmation: ConfirmationCard | null,
+  mode: ConversationMode,
+  keep?: Pick<ChatState, "notice">,
+): ChatState {
   return {
     messages: messages.map((m) => ({ id: m.id, role: m.role, content: m.content, tools: [], state: "done" as const })),
     pendingConfirmation,
+    mode,
     phase: "idle",
     notice: keep?.notice ?? null,
   };

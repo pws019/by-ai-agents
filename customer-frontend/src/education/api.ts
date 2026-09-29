@@ -77,6 +77,11 @@ export const respondToProposal = (applicationId: string, body: { accept: boolean
 
 export const listMyApplications = () => request<ApplicationPage>("/me/applications");
 
+// --- 转人工（T-22/23），学员本人的操作，不经过 Agent ---
+
+export const requestHandoff = (conversationId: string, reason?: string) =>
+  request<unknown>(`/conversations/${conversationId}/handoff`, { method: "POST", body: JSON.stringify(reason ? { reason } : {}) });
+
 export const getApplication = (applicationId: string) => request<ApplicationDetail>(`/applications/${applicationId}`);
 
 // --- 老师审批 ---

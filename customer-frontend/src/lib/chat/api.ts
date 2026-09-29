@@ -1,5 +1,5 @@
 // 聊天相关的真实网络实现。走 vite dev server 的 /api 代理，浏览器眼里与页面同源，session cookie 自动带上。
-import { ApiError, confirmApplication } from "../../education/api";
+import { ApiError, confirmApplication, requestHandoff } from "../../education/api";
 import type { StreamEvent } from "./events";
 import type { ChatApi, MessagesResponse } from "./session";
 import { readEvents } from "./sse";
@@ -42,6 +42,7 @@ export const chatApi: ChatApi = {
   resume: (conversationId) => stream(`/conversations/${conversationId}/resume`),
   getMessages: (conversationId) => json<MessagesResponse>(`/conversations/${conversationId}/messages`),
   confirmApplication,
+  requestHandoff,
 };
 
 export const newClientMessageId = () => crypto.randomUUID();

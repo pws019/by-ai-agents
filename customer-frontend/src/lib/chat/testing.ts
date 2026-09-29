@@ -13,6 +13,7 @@ export const ev = <T extends StreamEvent["type"]>(type: T, payload: Extract<Stre
 export const delta = (text: string) => ev("message.delta", { text });
 export const completed = (text: string, messageId = "m-assistant") => ev("message.completed", { messageId, text });
 export const tool = (name: string, status: "started" | "succeeded" | "failed") => ev("tool.status", { tool: name, status });
+export const handoffStatus = (mode: "bot" | "queued" | "human" | "closed") => ev("handoff.status", { mode });
 
 export const sseText = (events: unknown[]): string => events.map((e, i) => `id: ${i + 1}\nevent: x\ndata: ${JSON.stringify(e)}\n\n`).join("");
 
@@ -34,7 +35,7 @@ export async function collect<T>(gen: AsyncIterable<T>): Promise<T[]> {
 }
 
 export const run = (status: RunView["status"], errorCode: string | null = null): RunView => ({ id: "run-1", kind: "message", status, errorCode });
-export const server = (over: Partial<MessagesResponse> = {}): MessagesResponse => ({ items: [], run: null, pendingConfirmation: null, ...over });
+export const server = (over: Partial<MessagesResponse> = {}): MessagesResponse => ({ items: [], run: null, pendingConfirmation: null, mode: "bot", ...over });
 
 /** 事件流：先吐给定事件；如果给了 dropAfter，在吐完后抛出网络错误（模拟中途断线）。 */
 export async function* events(list: StreamEvent[], dropAfter?: Error): AsyncGenerator<StreamEvent> {
@@ -47,15 +48,17 @@ export interface FakeApiOptions {
   resume?: () => Promise<AsyncIterable<StreamEvent>>;
   messages?: (call: number) => Promise<MessagesResponse>;
   confirm?: () => Promise<unknown>;
+  handoff?: () => Promise<unknown>;
 }
 
 export function fakeApi(o: FakeApiOptions = {}) {
-  const calls = { send: 0, resume: 0, messages: 0, confirm: 0, sentBodies: [] as { clientMessageId: string; text: string }[] };
+  const calls = { send: 0, resume: 0, messages: 0, confirm: 0, handoff: 0, sentBodies: [] as { clientMessageId: string; text: string }[] };
   const api: ChatApi = {
     sendMessage: async (_id, body) => { calls.send++; calls.sentBodies.push(body); return o.send!(calls.send); },
     resume: async () => { calls.resume++; return o.resume!(); },
     getMessages: async () => { calls.messages++; return o.messages!(calls.messages); },
     confirmApplication: async () => { calls.confirm++; return o.confirm ? o.confirm() : {}; },
+    requestHandoff: async () => { calls.handoff++; return o.handoff ? o.handoff() : {}; },
   };
   return { api, calls };
 }

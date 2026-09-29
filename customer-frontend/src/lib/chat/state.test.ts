@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { CARD, completed, delta, ev, tool } from "./testing";
+import { CARD, completed, delta, ev, handoffStatus, tool } from "./testing";
 import { applyEvent, clearConfirmation, emptyChat, failTurn, fromServer, markDisconnected, startResume, startTurn, type ChatState } from "./state";
 
 const play = (state: ChatState, ...events: Parameters<typeof applyEvent>[1][]) => events.reduce(applyEvent, state);
@@ -69,8 +69,18 @@ describe("事件 → 状态", () => {
     assert.deepEqual([failed.messages[0]!.state, failed.messages[1]!.state, failed.messages[1]!.error, failed.phase], ["done", "error", "上一条还在处理中", "idle"]);
   });
 
-  test("以服务端为准重建：消息全部 done，带上待确认草稿", () => {
-    const s = fromServer([{ id: "1", role: "user", content: "a" }, { id: "2", role: "assistant", content: "b" }], CARD, { notice: "提示" });
-    assert.deepEqual([s.messages.length, s.pendingConfirmation, s.notice, s.phase], [2, CARD, "提示", "idle"]);
+  test("以服务端为准重建：消息全部 done，带上待确认草稿与 mode", () => {
+    const s = fromServer([{ id: "1", role: "user", content: "a" }, { id: "2", role: "assistant", content: "b" }], CARD, "queued", { notice: "提示" });
+    assert.deepEqual([s.messages.length, s.pendingConfirmation, s.notice, s.phase, s.mode], [2, CARD, "提示", "idle", "queued"]);
+  });
+
+  test("handoff.status：更新 mode，清掉空的'正在生成'占位（这次发送不会有机器人回复）", () => {
+    const s = play(startTurn(emptyChat(), "cm", "转人工"), handoffStatus("queued"));
+    assert.deepEqual([s.mode, s.phase, s.messages.map((m) => m.role)], ["queued", "idle", ["user"]]);
+  });
+
+  test("Agent 自己判断转人工：handoff.status 先到，随后还有固定回复的 completed 跟着来——占位被清掉后自动新建一条", () => {
+    const s = play(startTurn(emptyChat(), "cm", "转人工"), handoffStatus("queued"), completed("已经帮你转接老师"));
+    assert.deepEqual([s.mode, last(s).role, last(s).content, last(s).state], ["queued", "assistant", "已经帮你转接老师", "done"]);
   });
 });

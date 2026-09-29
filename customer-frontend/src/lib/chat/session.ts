@@ -2,7 +2,7 @@
 // 每个流程是一个异步生成器：每产生一个新的界面状态就 yield 一次，界面只需要 `for await` 后 setState。
 // 所有网络操作都通过注入的 ChatApi，所以可以用假 API 测试各种断线、超时、冲突，不必起服务。
 import { ApiError } from "../../education/api";
-import { StreamProtocolError, type ConfirmationCard, type StreamEvent } from "./events";
+import { StreamProtocolError, type ConfirmationCard, type ConversationMode, type StreamEvent } from "./events";
 import {
   applyEvent, clearConfirmation, failTurn, fromServer, markDisconnected, startResume, startTurn, withNotice,
   type ChatState, type ServerMessage,
@@ -19,6 +19,7 @@ export interface MessagesResponse {
   items: ServerMessage[];
   run: RunView | null;
   pendingConfirmation: ConfirmationCard | null;
+  mode: ConversationMode;
 }
 
 export interface ChatApi {
@@ -28,6 +29,8 @@ export interface ChatApi {
   getMessages(conversationId: string): Promise<MessagesResponse>;
   /** 用户本人对业务 API 的确认（不是 Agent 的能力）。 */
   confirmApplication(applicationId: string, body: { confirmationId: string; expectedRevision: number }): Promise<unknown>;
+  /** 用户本人请求老师接管（不是 Agent 的能力）：会话 bot → queued。 */
+  requestHandoff(conversationId: string, reason?: string): Promise<unknown>;
 }
 
 export interface SettleOptions {
@@ -73,9 +76,28 @@ export async function* confirmDraft(api: ChatApi, conversationId: string, state:
 
   const resuming = clearConfirmation(startResume(state));
   yield resuming;
-  yield* streamAndRecover(api, conversationId, () => api.resume(conversationId), resuming, opts, (err) =>
-    err.code === "INVALID_STATE" ? "你的确认已提交，可以在“我的申请”里查看进度。" : null,
-  );
+  yield* streamAndRecover(api, conversationId, () => api.resume(conversationId), resuming, opts, (err) => {
+    if (err.code === "INVALID_STATE") return "你的确认已提交，可以在“我的申请”里查看进度。";
+    // 接管期间恢复 Agent 会被拒绝（只有机器人能做这件事）：确认本身已经成功了，不是错误。
+    if (err.code === "HANDOFF_ACTIVE") return "你的确认已提交；这个会话正由老师处理，我暂时不会自动回复。";
+    return null;
+  });
+}
+
+// ---- 转人工 -------------------------------------------------------------------------------
+
+/**
+ * 学员点"转人工"：这是用户本人对业务 API 的操作，不经过 Agent（同 confirmDraft 里的确认）。
+ * 成功后不用本地拼状态——直接以服务端为准重新加载，mode/handoff 一次性对齐，避免和后续事件推导出两套结论。
+ */
+export async function* requestHandoff(api: ChatApi, conversationId: string, state: ChatState, reason?: string): AsyncGenerator<ChatState> {
+  try {
+    await api.requestHandoff(conversationId, reason);
+  } catch (err) {
+    yield withNotice(state, describe(err, "请求转人工失败，请重试。"));
+    return;
+  }
+  yield* reload(api, conversationId, "已经为你转接老师，请耐心等待。");
 }
 
 // ---- 打开会话 -----------------------------------------------------------------------------
@@ -83,7 +105,7 @@ export async function* confirmDraft(api: ChatApi, conversationId: string, state:
 /** 打开（或刷新）一个会话：以服务端为准；如果它此刻还有运行在生成，就等它结束再给出最终结果。 */
 export async function* openConversation(api: ChatApi, conversationId: string, opts?: SettleOptions): AsyncGenerator<ChatState> {
   const first = await api.getMessages(conversationId);
-  const initial = fromServer(first.items, first.pendingConfirmation);
+  const initial = fromServer(first.items, first.pendingConfirmation, first.mode);
   yield initial;
   if (first.run?.status === "running") yield* recover(api, conversationId, markDisconnected(initial), opts);
 }
@@ -100,7 +122,8 @@ async function* streamAndRecover(
     for await (const event of await open()) {
       s = applyEvent(s, event);
       yield s;
-      if (event.type === "message.completed" || event.type === "run.error") finished = true;
+      // handoff.status 也是终态：排队/接管中发的消息只被记录，不会再有 message.completed 跟着来。
+      if (event.type === "message.completed" || event.type === "run.error" || event.type === "handoff.status") finished = true;
     }
   } catch (err) {
     if (err instanceof ApiError) {
@@ -127,22 +150,22 @@ async function* recover(api: ChatApi, conversationId: string, state: ChatState, 
     yield { ...state, phase: "idle", notice: "无法连接到服务，请检查网络后刷新页面查看结果。" };
     return;
   }
-  const { items, run, pendingConfirmation } = outcome.value;
+  const { items, run, pendingConfirmation, mode } = outcome.value;
   const notice = outcome.kind === "timeout" ? "这条消息仍在处理中，请稍后刷新页面查看结果。"
     : run?.status === "failed" ? "这条消息没有处理成功，请重新发送。" : null;
-  yield fromServer(items, pendingConfirmation, { notice });
+  yield fromServer(items, pendingConfirmation, mode, { notice });
 }
 
 async function* reload(api: ChatApi, conversationId: string, notice: string): AsyncGenerator<ChatState> {
   try {
     const res = await api.getMessages(conversationId);
-    yield fromServer(res.items, res.pendingConfirmation, { notice });
+    yield fromServer(res.items, res.pendingConfirmation, res.mode, { notice });
   } catch {
-    yield { ...emptyWithNotice(notice) };
+    yield emptyWithNotice(notice);
   }
 }
 
-const emptyWithNotice = (notice: string): ChatState => ({ messages: [], pendingConfirmation: null, phase: "idle", notice });
+const emptyWithNotice = (notice: string): ChatState => ({ messages: [], pendingConfirmation: null, phase: "idle", notice, mode: "bot" });
 
 export type Settled =
   | { kind: "settled"; value: MessagesResponse }
@@ -175,6 +198,7 @@ const ERROR_TEXT: Record<string, string> = {
   VALIDATION_ERROR: "消息格式不对，请检查后重试。",
   NOT_FOUND: "找不到这个会话。",
   FORBIDDEN: "没有权限执行这个操作。",
+  HANDOFF_ACTIVE: "这个会话正由老师处理，机器人暂时不会回复。",
 };
 
 function describe(err: unknown, fallback: string): string {

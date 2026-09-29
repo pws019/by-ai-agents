@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { StreamProtocolError } from "./events";
-import { confirmDraft, openConversation, pollUntilSettled, sendTurn } from "./session";
+import { confirmDraft, openConversation, pollUntilSettled, requestHandoff, sendTurn } from "./session";
 import { emptyChat, fromServer, type ChatState } from "./state";
-import { CARD, apiError, collect, completed, delta, ev, events, fakeApi, fastClock, run, server, tool } from "./testing";
+import { CARD, apiError, collect, completed, delta, ev, events, fakeApi, fastClock, handoffStatus, run, server, tool } from "./testing";
 
 const CONV = "c-1";
 const finalOf = async (gen: AsyncIterable<ChatState>) => (await collect(gen)).at(-1)!;
@@ -184,6 +184,47 @@ describe("轮询（pollUntilSettled）", () => {
 
 describe("fromServer 对齐", () => {
   test("重建的状态里没有任何'正在生成'的消息", () => {
-    assert.ok(fromServer([{ id: "1", role: "assistant", content: "x" }], null).messages.every((m) => m.state === "done"));
+    assert.ok(fromServer([{ id: "1", role: "assistant", content: "x" }], null, "bot").messages.every((m) => m.state === "done"));
+  });
+});
+
+describe("排队/接管期间发消息（AC-012）", () => {
+  test("响应只有一个 handoff.status：不会被当成断线，不去轮询；mode 更新、占位气泡消失", async () => {
+    const { api, calls } = fakeApi({ send: async () => events([handoffStatus("queued")]) });
+    const last = await finalOf(sendTurn(api, CONV, emptyChat(), "在吗", "cm", fastClock()));
+    assert.deepEqual([last.phase, last.mode, last.messages.map((m) => m.role), calls.messages], ["idle", "queued", ["user"], 0]);
+  });
+
+  test("接管中同样：mode 变 human", async () => {
+    const { api } = fakeApi({ send: async () => events([handoffStatus("human")]) });
+    const last = await finalOf(sendTurn(api, CONV, emptyChat(), "还在吗", "cm"));
+    assert.equal(last.mode, "human");
+  });
+});
+
+describe("请求转人工", () => {
+  test("成功后以服务端为准重新加载（拿到最新 mode）", async () => {
+    const { api, calls } = fakeApi({
+      handoff: async () => ({ id: "h-1", status: "queued" }),
+      messages: async () => server({ items: [{ id: "u", role: "user", content: "hi" }], mode: "queued" }),
+    });
+    const last = await finalOf(requestHandoff(api, CONV, emptyChat()));
+    assert.deepEqual([calls.handoff, calls.messages, last.mode, /已经为你转接/.test(last.notice!)], [1, 1, "queued", true]);
+  });
+
+  test("请求失败：给出提示，不改变 mode", async () => {
+    const { api } = fakeApi({ handoff: async () => { throw apiError(409, "INVALID_STATE"); } });
+    const last = await finalOf(requestHandoff(api, CONV, emptyChat()));
+    assert.deepEqual([last.mode, typeof last.notice], ["bot", "string"]);
+  });
+});
+
+describe("确认后恢复遇到接管中（HANDOFF_ACTIVE）", () => {
+  test("不算错误：确认已经成功，只是机器人暂时不会自动回复", async () => {
+    const { api } = fakeApi({ resume: async () => { throw apiError(409, "HANDOFF_ACTIVE"); } });
+    const last = await finalOf(confirmDraft(api, CONV, withCard(), fastClock()));
+    assert.match(last.notice!, /正由老师处理/);
+    assert.equal(last.pendingConfirmation, null);
+    assert.ok(last.messages.every((m) => m.state !== "error"), "不留下失败的占位消息");
   });
 });

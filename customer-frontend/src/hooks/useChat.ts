@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { chatApi, createConversation, newClientMessageId } from "../lib/chat/api";
-import { confirmDraft, openConversation, sendTurn } from "../lib/chat/session";
+import { confirmDraft, openConversation, requestHandoff as requestHandoffFlow, sendTurn } from "../lib/chat/session";
 import { emptyChat, withNotice, type ChatState } from "../lib/chat/state";
 
 type UseChatOptions = {
@@ -109,5 +109,17 @@ export function useChat({ conversationId, onCreated }: UseChatOptions) {
     }
   }, [conversationId, pendingId, drive, update]);
 
-  return { state, loadingHistory, busy, sendMessage, retryLast, confirm };
+  // 转人工：用户本人对业务 API 的操作（同 confirm），没有会话（还没发过第一条消息）时什么都做不了。
+  const requestHandoff = useCallback(async () => {
+    const id = conversationId ?? pendingId;
+    if (!id || stateRef.current.phase !== "idle" || stateRef.current.mode !== "bot") return;
+    const token = ++flow.current;
+    try {
+      await drive(requestHandoffFlow(chatApi, id, stateRef.current), token);
+    } catch {
+      if (flow.current === token) update({ ...withNotice(stateRef.current, "请求转人工失败，请检查网络后重试。"), phase: "idle" });
+    }
+  }, [conversationId, pendingId, drive, update]);
+
+  return { state, loadingHistory, busy, sendMessage, retryLast, confirm, requestHandoff };
 }
