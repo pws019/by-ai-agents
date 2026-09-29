@@ -45,7 +45,7 @@
 - [x] T-20（3h）会话持久化、BFF SSE 与重复消息/并发生成处理。`education-api/src/chat/`。验收：AC-021；断线可查询完成消息。
 - [x] T-21（3h）前端脱离 Mastra SDK，新 HTTP/SSE 适配、工具/确认卡片。`customer-frontend/src/lib/`、`hooks/useChat.ts`。验收：聊天申请流程端到端通过。
 - [x] T-22（3h）人工队列、claim/release、摘要及机器人暂停。`education-api/src/handoffs/`、`education-agent/src/graphs/`（摘要在 `graphs/handoff.py`）。验收：AC-012，重复接管状态冲突。范围说明：本任务做的是学员明确要求转人工这一个触发与全部后端，老师侧列表接口和前端入口留给 T-23，Agent 自动转人工（证据不足、工具持续失败）未做，见 progress.md T-22 限制。
-- [ ] T-23（3h）老师会话工作台和学生排队状态，进行中（23a 数据接口已完成，见 progress.md）。`customer-frontend/src/routes/`。验收：老师接管回复再归还机器人。
+- [x] T-23（3h）老师会话工作台和学生排队状态。`customer-frontend/src/education/`（`TeacherHandoffsPage.tsx`）。验收：老师接管回复再归还机器人。
 - [ ] T-24（3h）mock 模型下编排、故障、取消、重启测试。`education-agent/tests/`、`tests/e2e/`。验收：AC-010/011/012/021；报告明确 mock。
 
 阶段门槛：申请闭环由聊天触发仍保持安全。讲解工具调用、结构化输出、图节点重放和业务事实回查。

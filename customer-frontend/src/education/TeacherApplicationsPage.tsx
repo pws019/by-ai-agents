@@ -2,6 +2,7 @@
 // 登记退款结果。审批链路里的每一步不变原则（revision/confirmedRevision）都在 education-api，
 // 这里只负责调用和如实展示 409 冲突，不在前端重新判断一遍"能不能批"。
 import { useEffect, useState } from "react";
+import { Link } from "react-router";
 import {
   ApiError,
   listTeacherApplications,
@@ -95,7 +96,12 @@ export function TeacherApplicationsPage() {
   return (
     <div className="min-h-screen bg-surface text-on-surface p-8 max-w-container-max-width mx-auto">
       <header className="flex items-center justify-between mb-6">
-        <h1 className="text-headline-sm">申请审批</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-headline-sm">申请审批</h1>
+          <Link to="/teacher/handoffs" className="text-sm text-primary underline">
+            会话工作台
+          </Link>
+        </div>
         <div className="flex items-center gap-3 text-sm text-on-surface-variant">
           <span>{user?.loginName}</span>
           <button onClick={() => void logout()} className="text-primary underline">

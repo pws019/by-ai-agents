@@ -8,8 +8,10 @@ import type {
   ApplicationStatus,
   ApplicationType,
   CohortSummary,
+  ConversationMessage,
   CurrentUser,
   Enrollment,
+  Handoff,
   ProgressItem,
   ScheduleItem,
 } from "./types";
@@ -117,3 +119,19 @@ export const teacherRecordRefundResult = (
   applicationId: string,
   body: { outcome: "completed" | "failed"; note: string; reference?: string | null; expectedRevision: number },
 ) => request<Application>(`/teacher/applications/${applicationId}/refund-result`, { method: "POST", body: JSON.stringify(body) });
+
+// --- 老师会话工作台（T-23）：待接管队列、接管/结束接管、已接管会话的消息 ---
+
+export const listTeacherHandoffs = () => request<{ items: Handoff[] }>("/teacher/handoffs");
+
+export const claimHandoff = (handoffId: string, body: { expectedRevision: number }) =>
+  request<Handoff>(`/teacher/handoffs/${handoffId}/claim`, { method: "POST", body: JSON.stringify(body) });
+
+export const releaseHandoff = (handoffId: string, body: { expectedRevision: number }) =>
+  request<Handoff>(`/teacher/handoffs/${handoffId}/release`, { method: "POST", body: JSON.stringify(body) });
+
+export const getTeacherConversationMessages = (conversationId: string) =>
+  request<{ items: ConversationMessage[]; handoff: Handoff }>(`/teacher/conversations/${conversationId}/messages`);
+
+export const teacherSendChatMessage = (conversationId: string, body: { clientMessageId: string; text: string }) =>
+  request<ConversationMessage>(`/teacher/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify(body) });

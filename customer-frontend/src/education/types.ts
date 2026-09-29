@@ -109,3 +109,24 @@ export type ApplicationEvent = {
 export type ApplicationDetail = Application & { events: ApplicationEvent[] };
 
 export type ApplicationPage = { items: Application[]; nextCursor: string | null };
+
+// 转人工（T-22/23）。summary 只在老师视角的响应里有（学员侧不带这个字段，见后端 toHandoff）。
+export type HandoffStatus = "queued" | "claimed" | "released";
+
+export type Handoff = {
+  id: string;
+  conversationId: string;
+  status: HandoffStatus;
+  teacherId: string | null;
+  summary: string | null;
+  reason: string | null;
+  revision: number;
+};
+
+export type ConversationMessage = {
+  id: string;
+  role: "user" | "assistant" | "teacher" | "system";
+  content: string;
+  runId: string | null;
+  createdAt: string;
+};

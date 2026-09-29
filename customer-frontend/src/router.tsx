@@ -8,6 +8,7 @@ import { MyApplicationsPage } from "./education/MyApplicationsPage";
 import { MyLearningPage } from "./education/MyLearningPage";
 import { RequireAuth } from "./education/RequireAuth";
 import { TeacherApplicationsPage } from "./education/TeacherApplicationsPage";
+import { TeacherHandoffsPage } from "./education/TeacherHandoffsPage";
 import { IndexRoute } from "./routes/IndexRoute";
 import { SessionRoute } from "./routes/SessionRoute";
 
@@ -54,6 +55,14 @@ export const router = createBrowserRouter([
         element: (
           <RequireAuth role="teacher">
             <TeacherApplicationsPage />
+          </RequireAuth>
+        ),
+      },
+      {
+        path: "teacher/handoffs",
+        element: (
+          <RequireAuth role="teacher">
+            <TeacherHandoffsPage />
           </RequireAuth>
         ),
       },
