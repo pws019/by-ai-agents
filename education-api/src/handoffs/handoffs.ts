@@ -5,7 +5,7 @@
 //   - handoff 的每一次变化同时带上 status 和 revision 条件；
 //   - 会话 mode 与 handoff 状态在同一个事务里一起变，任何一步失败整体回滚，不会出现"会话是 human 但没有接管记录"。
 // 失败时才回头读一次，只用来解释"为什么没命中"（不存在 / 状态不对 / 不是你的 / 版本旧了），不参与判断。
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../db/pool.js";
 import { conversations, handoffs, messages } from "../db/schema.js";
 
@@ -166,6 +166,31 @@ export async function findActiveHandoff(db: Pick<Db, "select">, conversationId: 
     .from(handoffs)
     .where(and(eq(handoffs.conversationId, conversationId), inArray(handoffs.status, ["queued", "claimed"])));
   return row ?? null;
+}
+
+/** 老师工作台的队列：所有进行中（排队 + 已接管，不分是不是这位老师）的记录，按发起时间从旧到新。 */
+export async function listActiveHandoffs(db: Pick<Db, "select">): Promise<HandoffRow[]> {
+  return db
+    .select()
+    .from(handoffs)
+    .where(inArray(handoffs.status, ["queued", "claimed"]))
+    .orderBy(asc(handoffs.createdAt));
+}
+
+export type ConversationMessage = { id: string; role: string; content: string; runId: string | null; createdAt: Date };
+
+/**
+ * 一个会话的完整消息历史，供老师工作台展示。调用方必须先确认这位老师确实是当前接管人——
+ * 这里不做授权判断（和 chat/runs.ts 的读取函数一样，授权是路由层的职责，这里只读数据）。
+ */
+export async function listConversationMessages(db: Pick<Db, "select">, conversationId: string): Promise<ConversationMessage[]> {
+  const rows = await db
+    .select({ id: messages.id, role: messages.role, content: messages.content, runId: messages.runId, createdAt: messages.createdAt })
+    .from(messages)
+    .where(eq(messages.conversationId, conversationId))
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(200);
+  return rows.reverse();
 }
 
 async function flipConversationMode(tx: Tx, conversationId: string, from: "queued" | "human", to: "human" | "bot") {

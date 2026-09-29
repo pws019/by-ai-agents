@@ -802,6 +802,27 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/Invalid'}
+  /teacher/handoffs:
+    get:
+      tags: [teacher]
+      operationId: listTeacherHandoffs
+      summary: 进行中的接管队列（待接管 + 已接管），供老师工作台展示
+      description: |
+        只返回排队中（queued）和已接管（claimed）的记录，按发起时间排序；已结束（released）的不在这里。
+        每条都带交接摘要（Agent 转人工时写的；学员直接点按钮转人工的没有摘要）。
+      responses:
+        '200':
+          description: 队列
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Handoff'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /teacher/handoffs/{handoffId}/claim:
     post:
       tags: [teacher]
@@ -850,6 +871,30 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/Invalid'}
   /teacher/conversations/{conversationId}/messages:
+    get:
+      tags: [teacher]
+      operationId: listConversationMessagesForTeacher
+      summary: 已接管会话的完整消息与交接摘要，供老师工作台展示
+      description: |
+        只有当前接管这个会话的老师能看（最小暴露：不能翻看别人接管过、或还在排队没人接管的会话）。
+        不在你的接管中（排队中、被别人接管、或早已回到 bot）返回 409 INVALID_STATE；被另一位老师接管返回 403。
+      parameters: [{$ref: '#/components/parameters/ConversationId'}]
+      responses:
+        '200':
+          description: 消息与交接摘要
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, handoff]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Message'}
+                  handoff: {$ref: '#/components/schemas/Handoff'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
     post:
       tags: [teacher]
       operationId: teacherSendMessage

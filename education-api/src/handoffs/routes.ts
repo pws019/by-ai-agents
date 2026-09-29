@@ -1,7 +1,9 @@
 // 转人工接口（契约见 contracts/education/openapi.yaml）：
 //   POST /conversations/:id/handoff            学员请求老师接管（owner）
+//   GET  /teacher/handoffs                     老师工作台的队列：进行中（排队+已接管）的记录
 //   POST /teacher/handoffs/:id/claim           老师接管（expectedRevision）
 //   POST /teacher/handoffs/:id/release         老师结束接管，会话回到 bot（expectedRevision）
+//   GET  /teacher/conversations/:id/messages   已接管会话的完整消息历史（只有接管人能看）
 //   POST /teacher/conversations/:id/messages   接管中的老师发消息（clientMessageId 去重）
 // 这些路径都在 app.ts 里对 Agent 通道关闭（/conversations/*、/teacher/*）：接管由学员本人或 BFF 发起，
 // Agent 服务不直接读写会话——它只通过事件流告诉 BFF"我认为该转人工"，由 BFF 落库（见 chat/supervisor.ts）。
@@ -10,7 +12,17 @@ import { requireAuth, requireRole } from "../auth/middleware.js";
 import type { Db } from "../db/pool.js";
 import { findOwnedConversation } from "../chat/runs.js";
 import { errorJson } from "../http/errors.js";
-import { claimHandoff, releaseHandoff, requestHandoff, teacherSendMessage, toHandoff, type TransitionResult } from "./handoffs.js";
+import {
+  claimHandoff,
+  findActiveHandoff,
+  listActiveHandoffs,
+  listConversationMessages,
+  releaseHandoff,
+  requestHandoff,
+  teacherSendMessage,
+  toHandoff,
+  type TransitionResult,
+} from "./handoffs.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REASON_MAX = 500;
@@ -36,8 +48,15 @@ export function createHandoffRoutes(db: Db): Hono {
   });
 
   // 以下都是老师专属：先登录、再校验角色。
+  app.use("/teacher/handoffs", requireAuth, requireRole("teacher"));
   app.use("/teacher/handoffs/*", requireAuth, requireRole("teacher"));
   app.use("/teacher/conversations/*", requireAuth, requireRole("teacher"));
+
+  // 工作台的队列：待接管 + 已接管（不分老师），前端自己按 status/teacherId 分成"待接管"和"我接管的"两栏。
+  app.get("/teacher/handoffs", async (c) => {
+    const rows = await listActiveHandoffs(db);
+    return c.json({ items: rows.map((h) => toHandoff(h, "teacher")) });
+  });
 
   const transition = (op: typeof claimHandoff | typeof releaseHandoff) => async (c: Context) => {
     const actor = c.get("actor")!;
@@ -50,6 +69,20 @@ export function createHandoffRoutes(db: Db): Hono {
   };
   app.post("/teacher/handoffs/:handoffId/claim", transition(claimHandoff));
   app.post("/teacher/handoffs/:handoffId/release", transition(releaseHandoff));
+
+  // 只有当前接管这个会话的老师能看：不能翻看排队中没人接管、或别人接管、或早已放回 bot 的会话（最小暴露）。
+  app.get("/teacher/conversations/:conversationId/messages", async (c) => {
+    const actor = c.get("actor")!;
+    const conversationId = c.req.param("conversationId")!;
+    if (!UUID.test(conversationId)) return errorJson(c, 404, "NOT_FOUND", "会话不存在");
+
+    const handoff = await findActiveHandoff(db, conversationId);
+    if (!handoff || handoff.status !== "claimed") return errorJson(c, 409, "INVALID_STATE", "这个会话不在你的接管中");
+    if (handoff.teacherId !== actor.id) return errorJson(c, 403, "FORBIDDEN", "这个会话正被另一位老师接管");
+
+    const items = await listConversationMessages(db, conversationId);
+    return c.json({ items: items.map(toMessage), handoff: toHandoff(handoff, "teacher") });
+  });
 
   app.post("/teacher/conversations/:conversationId/messages", async (c) => {
     const actor = c.get("actor")!;

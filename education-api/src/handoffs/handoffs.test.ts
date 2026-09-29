@@ -502,12 +502,13 @@ describe("数据库约束（绕过应用层直接写也挡得住）", () => {
   });
 });
 
+// 交接摘要样例，及"Agent 认为该转人工"的两步事件（handoff.requested → message.completed）。工作台的队列/消息测试也用得到。
+const SUMMARY = "【学员诉求】\n- “我要找老师”\n【已核验事实】\n- 无";
+const requested = (payload: Record<string, unknown>) => ({ type: "handoff.requested", payload });
+const done = { type: "message.completed", payload: { text: "好的，我已经帮你转接老师。" } };
+
 // 22b：Agent 认为该转人工时，通过事件流发 handoff.requested，由 BFF 落库（业务 API 对 Agent 通道关闭了 /conversations/*）。
 describe("Agent 交来的转人工请求（handoff.requested）", () => {
-  const SUMMARY = "【学员诉求】\n- “我要找老师”\n【已核验事实】\n- 无";
-  const requested = (payload: Record<string, unknown>) => ({ type: "handoff.requested", payload });
-  const done = { type: "message.completed", payload: { text: "好的，我已经帮你转接老师。" } };
-
   test("落库：会话进入排队，原因和摘要保存；浏览器只收到 handoff.status 和最终回复，看不到原始事件和摘要", async () => {
     const conversationId = await newConversation();
     agent.script = [requested({ reason: "学员主动请求转人工", summary: SUMMARY }), done];
@@ -567,5 +568,112 @@ describe("Agent 交来的转人工请求（handoff.requested）", () => {
     await (await studentSays(conversationId, "转人工", "ag-5")).text();
     const h = (await q("SELECT status, reason, summary FROM handoffs WHERE conversation_id = $1", [conversationId])).rows;
     assert.deepEqual(h, [{ status: "queued", reason: null, summary: null }]);
+  });
+});
+
+// T-23：老师会话工作台——待接管/已接管队列，以及已接管会话的消息历史。
+const queue = async (cookie = teacherCookie) => (await get("/teacher/handoffs", cookie)).json();
+const teacherMessages = async (conversationId: string, cookie = teacherCookie) =>
+  await get(`/teacher/conversations/${conversationId}/messages`, cookie);
+
+describe("老师工作台：队列（GET /teacher/handoffs）", () => {
+  test("只列进行中（排队+已接管）的记录，按发起时间从旧到新；已结束的不在里面", async () => {
+    // 队列是全局共享的（不按会话隔离），所以只断言这三条各自的顺序关系与是否出现，不假设队列里只有它们。
+    const c1 = await newConversation();
+    const { id: h1 } = await requestHandoffVia(c1, "先来的");
+    const c2 = await newConversation();
+    const { id: h2, revision: rev2 } = await requestHandoffVia(c2, "后来的");
+    await claim(h2, rev2); // c2 变成已接管，仍应出现
+
+    const c3 = await newConversation();
+    const { id: h3, revision: rev3 } = await requestHandoffVia(c3, "已经结束的");
+    const claimed3 = await (await claim(h3, rev3)).json();
+    await release(h3, claimed3.revision); // released：不该出现
+
+    const { items } = await queue();
+    const ids: string[] = items.map((h: { id: string }) => h.id);
+    assert.ok(ids.indexOf(h1) < ids.indexOf(h2), "h1 比 h2 先发起，队列里也该在它前面");
+    assert.equal(items.find((h: { id: string }) => h.id === h1).status, "queued");
+    assert.equal(items.find((h: { id: string }) => h.id === h2).status, "claimed");
+    assert.ok(!ids.includes(h3), "已结束的接管不该出现在队列里");
+  });
+
+  test("带交接摘要（老师视角）；学员直接点按钮转人工的没有摘要（null）", async () => {
+    const conversationId = await newConversation();
+    agent.script = [requested({ reason: "学员主动请求转人工", summary: SUMMARY }), done];
+    await (await studentSays(conversationId, "转人工", "wb-1")).text();
+
+    const { items } = await queue();
+    const mine = items.find((h: { conversationId: string }) => h.conversationId === conversationId);
+    assert.equal(mine.summary, SUMMARY);
+
+    const c2 = await newConversation();
+    await requestHandoffVia(c2, "手动点的");
+    const { items: items2 } = await queue();
+    assert.equal(items2.find((h: { conversationId: string }) => h.conversationId === c2).summary, null);
+  });
+
+  test("学员访问返回 403", async () => {
+    const res = await get("/teacher/handoffs", studentCookie);
+    assert.equal(res.status, 403);
+  });
+});
+
+describe("老师工作台：会话消息（GET /teacher/conversations/:id/messages）", () => {
+  test("排队中还没人接管：409 INVALID_STATE", async () => {
+    const conversationId = await newConversation();
+    await requestHandoffVia(conversationId);
+    assert.equal((await teacherMessages(conversationId)).status, 409);
+  });
+
+  test("被另一位老师接管：403，不泄露对话内容", async () => {
+    const conversationId = await newConversation();
+    const { id, revision } = await requestHandoffVia(conversationId);
+    await claim(id, revision, teacherCookie);
+    assert.equal((await teacherMessages(conversationId, teacher2Cookie)).status, 403);
+  });
+
+  test("接管人能看到完整历史（学员+老师消息）和交接摘要", async () => {
+    const conversationId = await newConversation();
+    agent.script = [requested({ reason: "学员主动请求转人工", summary: SUMMARY }), done];
+    await (await studentSays(conversationId, "我要找老师", "wb-2a")).text();
+    await (await studentSays(conversationId, "还在吗", "wb-2b")).text();
+
+    const handoffId = await id("SELECT id FROM handoffs WHERE conversation_id = $1", [conversationId]);
+    const claimed = await (await claim(handoffId, 1, teacherCookie)).json();
+    await teacherSays(conversationId, "我在的，请说", "wb-2c", teacherCookie);
+
+    const body = await (await teacherMessages(conversationId)).json();
+    assert.deepEqual(
+      body.items.map((m: { role: string; content: string }) => [m.role, m.content]),
+      [
+        ["user", "我要找老师"],
+        ["assistant", "好的，我已经帮你转接老师。"],
+        ["user", "还在吗"],
+        ["teacher", "我在的，请说"],
+      ],
+    );
+    assert.equal(body.handoff.id, claimed.id);
+    assert.equal(body.handoff.summary, SUMMARY);
+  });
+
+  test("结束接管之后：不再是接管人，409（不能翻看已经放回机器人的会话）", async () => {
+    const conversationId = await newConversation();
+    const { id: handoffId, revision } = await requestHandoffVia(conversationId);
+    const claimed = await (await claim(handoffId, revision, teacherCookie)).json();
+    await release(handoffId, claimed.revision, teacherCookie);
+    assert.equal((await teacherMessages(conversationId)).status, 409);
+  });
+
+  test("会话不存在（合法 UUID 但没有这条会话）：409，不额外泄露会话是否存在", async () => {
+    // 没有进行中的 handoff，和"排队中没人接管"走同一分支。
+    assert.equal((await teacherMessages("00000000-0000-0000-0000-000000000000")).status, 409);
+  });
+
+  test("学员访问返回 403", async () => {
+    const conversationId = await newConversation();
+    const { id: handoffId, revision } = await requestHandoffVia(conversationId);
+    await claim(handoffId, revision, teacherCookie);
+    assert.equal((await teacherMessages(conversationId, studentCookie)).status, 403);
   });
 });
