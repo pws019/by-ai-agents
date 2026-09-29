@@ -2,7 +2,6 @@
 // 登记退款结果。审批链路里的每一步不变原则（revision/confirmedRevision）都在 education-api，
 // 这里只负责调用和如实展示 409 冲突，不在前端重新判断一遍"能不能批"。
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
 import {
   ApiError,
   listTeacherApplications,
@@ -15,7 +14,6 @@ import {
   teacherRequestInfo,
 } from "./api";
 import { APPLICATION_STATUS_LABEL, APPLICATION_TYPE_LABEL, eventLabel } from "./applicationLabels";
-import { useAuth } from "./AuthContext";
 import type { Application, ApplicationDetail, ApplicationStatus, CohortSummary } from "./types";
 
 function centsToYuan(cents: number): string {
@@ -32,7 +30,6 @@ const STATUS_FILTERS: { label: string; value: ApplicationStatus | "" }[] = [
 ];
 
 export function TeacherApplicationsPage() {
-  const { user, logout } = useAuth();
   const [statusFilter, setStatusFilter] = useState<ApplicationStatus | "">("");
   const [applications, setApplications] = useState<Application[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -94,86 +91,77 @@ export function TeacherApplicationsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-surface text-on-surface p-8 max-w-container-max-width mx-auto">
-      <header className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <h1 className="text-headline-sm">申请审批</h1>
-          <Link to="/teacher/handoffs" className="text-sm text-primary underline">
-            会话工作台
-          </Link>
-        </div>
-        <div className="flex items-center gap-3 text-sm text-on-surface-variant">
-          <span>{user?.loginName}</span>
-          <button onClick={() => void logout()} className="text-primary underline">
-            退出登录
-          </button>
-        </div>
-      </header>
+    <div className="h-full overflow-y-auto custom-scrollbar">
+      <div className="p-8 max-w-container-max-width mx-auto">
+        <h1 className="text-headline-sm text-on-surface mb-6">申请审批</h1>
 
-      {error && <p className="text-error mb-4">{error}</p>}
+        {error && <p className="text-error mb-4">{error}</p>}
 
-      <div className="grid grid-cols-[360px_1fr] gap-6">
-        <div>
-          <div className="flex flex-wrap gap-1 mb-3">
-            {STATUS_FILTERS.map((f) => (
-              <button
-                key={f.value}
-                onClick={() => setStatusFilter(f.value)}
-                className={`rounded-md px-2.5 py-1 text-xs ${
-                  statusFilter === f.value ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
+        <div className="grid grid-cols-[360px_1fr] gap-6">
+          <div>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.value}
+                  onClick={() => setStatusFilter(f.value)}
+                  className={`rounded-full px-3 py-1 text-label-sm transition-colors ${
+                    statusFilter === f.value ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            {applications === null ? (
+              <p className="text-on-surface-variant">加载中…</p>
+            ) : applications.length === 0 ? (
+              <p className="text-on-surface-variant">没有符合条件的申请。</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {applications.map((a) => (
+                  <li key={a.id}>
+                    <button
+                      onClick={() => setSelectedId(a.id)}
+                      className={`w-full text-left rounded-xl border px-3 py-2.5 text-body-sm transition-colors ${
+                        a.id === selectedId
+                          ? "border-primary bg-surface-container-high"
+                          : "border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-on-surface">{APPLICATION_TYPE_LABEL[a.type]}</span>
+                        <span className="rounded-full px-2.5 py-1 text-label-sm bg-secondary-container text-on-secondary-container">
+                          {APPLICATION_STATUS_LABEL[a.status]}
+                        </span>
+                      </div>
+                      <div className="text-label-sm text-on-surface-variant mt-1 truncate">{a.summary.reason}</div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
-          {applications === null ? (
-            <p className="text-on-surface-variant">加载中…</p>
-          ) : applications.length === 0 ? (
-            <p className="text-on-surface-variant">没有符合条件的申请。</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {applications.map((a) => (
-                <li key={a.id}>
-                  <button
-                    onClick={() => setSelectedId(a.id)}
-                    className={`w-full text-left rounded-md border px-3 py-2 text-sm ${
-                      a.id === selectedId ? "border-primary bg-primary-container/10" : "border-outline-variant"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span>{APPLICATION_TYPE_LABEL[a.type]}</span>
-                      <span className="rounded-full px-2 py-0.5 text-xs bg-secondary-container text-on-secondary-container">
-                        {APPLICATION_STATUS_LABEL[a.status]}
-                      </span>
-                    </div>
-                    <div className="text-xs text-on-surface-variant mt-1 truncate">{a.summary.reason}</div>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div>
-          {!detail ? (
-            <p className="text-on-surface-variant">从左侧选一条申请处理。</p>
-          ) : (
-            <TeacherDetailPanel
-              detail={detail}
-              targets={targets}
-              targetLabel={targetLabel}
-              busy={busy}
-              onRequestInfo={(question) => void afterAction(teacherRequestInfo(detail.id, { question, expectedRevision: detail.revision }))}
-              onPropose={(body) => void afterAction(teacherPropose(detail.id, { ...body, expectedRevision: detail.revision }))}
-              onApprove={(oldReplayAccess) =>
-                void afterAction(teacherApprove(detail.id, { expectedRevision: detail.revision, ...(oldReplayAccess ? { oldReplayAccess } : {}) }))
-              }
-              onReject={(reason) => void afterAction(teacherReject(detail.id, { reason, expectedRevision: detail.revision }))}
-              onRefundResult={(body) => void afterAction(teacherRecordRefundResult(detail.id, { ...body, expectedRevision: detail.revision }))}
-            />
-          )}
+          <div>
+            {!detail ? (
+              <p className="text-on-surface-variant">从左侧选一条申请处理。</p>
+            ) : (
+              <TeacherDetailPanel
+                detail={detail}
+                targets={targets}
+                targetLabel={targetLabel}
+                busy={busy}
+                onRequestInfo={(question) => void afterAction(teacherRequestInfo(detail.id, { question, expectedRevision: detail.revision }))}
+                onPropose={(body) => void afterAction(teacherPropose(detail.id, { ...body, expectedRevision: detail.revision }))}
+                onApprove={(oldReplayAccess) =>
+                  void afterAction(teacherApprove(detail.id, { expectedRevision: detail.revision, ...(oldReplayAccess ? { oldReplayAccess } : {}) }))
+                }
+                onReject={(reason) => void afterAction(teacherReject(detail.id, { reason, expectedRevision: detail.revision }))}
+                onRefundResult={(body) => void afterAction(teacherRecordRefundResult(detail.id, { ...body, expectedRevision: detail.revision }))}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -216,7 +204,7 @@ function TeacherDetailPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="rounded-md border border-outline-variant p-4">
+      <div className="rounded-xl border border-outline-variant bg-surface-container-lowest p-4">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-title-md">{APPLICATION_TYPE_LABEL[detail.type]}申请</h2>
           <span className="rounded-full px-2 py-0.5 text-xs bg-secondary-container text-on-secondary-container">
@@ -235,7 +223,7 @@ function TeacherDetailPanel({
       </div>
 
       {canDecide && (
-        <div className="flex flex-col gap-4 rounded-md border border-outline-variant p-4">
+        <div className="flex flex-col gap-4 rounded-xl border border-outline-variant bg-surface-container-lowest p-4">
           <div>
             <p className="text-sm mb-2">要求补充信息</p>
             <div className="flex gap-2">
@@ -248,7 +236,7 @@ function TeacherDetailPanel({
               <button
                 onClick={() => onRequestInfo(question)}
                 disabled={busy || !question.trim()}
-                className="rounded-md border border-outline-variant px-3 py-1.5 text-sm disabled:opacity-50"
+                className="rounded-lg border border-outline-variant px-3 py-1.5 text-label-md disabled:opacity-50"
               >
                 发送
               </button>
@@ -300,7 +288,7 @@ function TeacherDetailPanel({
                 !proposeReason.trim() ||
                 (detail.type === "transfer" ? !proposeTarget : !(Number(proposeRefundYuan) >= 0))
               }
-              className="rounded-md border border-outline-variant px-3 py-1.5 text-sm disabled:opacity-50"
+              className="rounded-lg border border-outline-variant px-3 py-1.5 text-label-md disabled:opacity-50"
             >
               提出方案（需学员确认）
             </button>
@@ -322,7 +310,7 @@ function TeacherDetailPanel({
               <button
                 onClick={() => onApprove(detail.type === "transfer" ? oldReplayAccess : undefined)}
                 disabled={busy}
-                className="rounded-md bg-primary text-on-primary px-4 py-1.5 text-sm disabled:opacity-50"
+                className="rounded-lg bg-primary text-on-primary px-4 py-1.5 text-label-md disabled:opacity-50"
               >
                 批准
               </button>
@@ -341,7 +329,7 @@ function TeacherDetailPanel({
               <button
                 onClick={() => onReject(rejectReason)}
                 disabled={busy || !rejectReason.trim()}
-                className="rounded-md border border-error text-error px-3 py-1.5 text-sm disabled:opacity-50"
+                className="rounded-lg border border-error text-error px-3 py-1.5 text-label-md disabled:opacity-50"
               >
                 拒绝
               </button>
@@ -351,7 +339,7 @@ function TeacherDetailPanel({
       )}
 
       {canRecordRefund && (
-        <div className="rounded-md border border-primary bg-primary-container/10 p-4">
+        <div className="rounded-xl border border-primary bg-primary-container/10 p-4">
           <p className="text-sm mb-2">
             登记退款结果——这个系统没有接支付渠道，钱是在系统外面手动转的，这里只记录"转成了"还是"转失败了"。
           </p>
@@ -378,7 +366,7 @@ function TeacherDetailPanel({
           <button
             onClick={() => onRefundResult({ outcome: refundOutcome, note: refundNote, reference: refundReference || null })}
             disabled={busy || !refundNote.trim()}
-            className="rounded-md bg-primary text-on-primary px-4 py-1.5 text-sm disabled:opacity-50"
+            className="rounded-lg bg-primary text-on-primary px-4 py-1.5 text-label-md disabled:opacity-50"
           >
             登记
           </button>
@@ -389,7 +377,7 @@ function TeacherDetailPanel({
         <h3 className="text-title-sm mb-2">时间线</h3>
         <ul className="flex flex-col gap-2">
           {detail.events.map((ev, i) => (
-            <li key={i} className="text-sm rounded-md border border-outline-variant px-3 py-2">
+            <li key={i} className="text-body-sm rounded-lg border border-outline-variant px-3 py-2">
               <div className="flex items-center justify-between">
                 <span>{eventLabel(ev)}</span>
                 <span className="text-xs text-on-surface-variant">{new Date(ev.createdAt).toLocaleString()}</span>

@@ -14,7 +14,6 @@ import {
   withdrawApplication,
 } from "./api";
 import { APPLICATION_STATUS_LABEL, APPLICATION_TYPE_LABEL, eventLabel, isTerminalStatus } from "./applicationLabels";
-import { useAuth } from "./AuthContext";
 import type { Application, ApplicationDetail, ApplicationType, CohortSummary, Enrollment } from "./types";
 
 function centsToYuan(cents: number): string {
@@ -22,7 +21,6 @@ function centsToYuan(cents: number): string {
 }
 
 export function MyApplicationsPage() {
-  const { user, logout } = useAuth();
   const [enrollments, setEnrollments] = useState<Enrollment[] | null>(null);
   const [applications, setApplications] = useState<Application[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -82,100 +80,91 @@ export function MyApplicationsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-surface text-on-surface p-8 max-w-container-max-width mx-auto">
-      <header className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <h1 className="text-headline-sm">我的申请</h1>
-          <a href="/my-learning" className="text-sm text-primary underline">
-            返回我的学习
-          </a>
-        </div>
-        <div className="flex items-center gap-3 text-sm text-on-surface-variant">
-          <span>{user?.loginName}</span>
-          <button onClick={() => void logout()} className="text-primary underline">
-            退出登录
-          </button>
-        </div>
-      </header>
+    <div className="h-full overflow-y-auto custom-scrollbar">
+      <div className="p-8 max-w-container-max-width mx-auto">
+        <h1 className="text-headline-sm text-on-surface mb-6">我的申请</h1>
 
-      {error && <p className="text-error mb-4">{error}</p>}
+        {error && <p className="text-error mb-4">{error}</p>}
 
-      <div className="grid grid-cols-[320px_1fr] gap-6">
-        <div>
-          <button
-            onClick={() => setCreating((v) => !v)}
-            className="w-full mb-3 rounded-md bg-primary text-on-primary py-2 text-sm"
-          >
-            {creating ? "取消" : "+ 新建申请"}
-          </button>
+        <div className="grid grid-cols-[320px_1fr] gap-6">
+          <div>
+            <button
+              onClick={() => setCreating((v) => !v)}
+              className="w-full mb-3 flex items-center justify-center gap-1.5 rounded-xl bg-primary text-on-primary py-2.5 text-label-md hover:opacity-90 active:scale-[0.98] transition-all"
+            >
+              {creating ? "取消" : "+ 新建申请"}
+            </button>
 
-          {creating && enrollments && (
-            <CreateApplicationForm
-              enrollments={enrollments}
-              onCreated={(draft) => {
-                setCreating(false);
-                setError(null);
-                void refreshList();
-                setSelectedId(draft.id);
-              }}
-              onError={setError}
-            />
-          )}
+            {creating && enrollments && (
+              <CreateApplicationForm
+                enrollments={enrollments}
+                onCreated={(draft) => {
+                  setCreating(false);
+                  setError(null);
+                  void refreshList();
+                  setSelectedId(draft.id);
+                }}
+                onError={setError}
+              />
+            )}
 
-          {applications === null ? (
-            <p className="text-on-surface-variant">加载中…</p>
-          ) : applications.length === 0 ? (
-            <p className="text-on-surface-variant">还没有申请记录。</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {applications.map((a) => (
-                <li key={a.id}>
-                  <button
-                    onClick={() => setSelectedId(a.id)}
-                    className={`w-full text-left rounded-md border px-3 py-2 text-sm ${
-                      a.id === selectedId ? "border-primary bg-primary-container/10" : "border-outline-variant"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span>{APPLICATION_TYPE_LABEL[a.type]}</span>
-                      <StatusBadge status={a.status} />
-                    </div>
-                    <div className="text-xs text-on-surface-variant mt-1 truncate">{a.summary.reason}</div>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+            {applications === null ? (
+              <p className="text-on-surface-variant">加载中…</p>
+            ) : applications.length === 0 ? (
+              <p className="text-on-surface-variant">还没有申请记录。</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {applications.map((a) => (
+                  <li key={a.id}>
+                    <button
+                      onClick={() => setSelectedId(a.id)}
+                      className={`w-full text-left rounded-xl border px-3 py-2.5 text-body-sm transition-colors ${
+                        a.id === selectedId
+                          ? "border-primary bg-surface-container-high"
+                          : "border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-on-surface">{APPLICATION_TYPE_LABEL[a.type]}</span>
+                        <StatusBadge status={a.status} />
+                      </div>
+                      <div className="text-label-sm text-on-surface-variant mt-1 truncate">{a.summary.reason}</div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
-        <div>
-          {!detail ? (
-            <p className="text-on-surface-variant">从左侧选一条申请查看详情。</p>
-          ) : (
-            <ApplicationDetailPanel
-              detail={detail}
-              busy={busy}
-              targetLabel={targetLabel}
-              onConfirm={() => {
-                if (!detail.pendingConfirmation) return;
-                void afterAction(
-                  confirmApplication(detail.id, { confirmationId: detail.pendingConfirmation.confirmationId, expectedRevision: detail.revision }),
-                );
-              }}
-              onWithdraw={() => void afterAction(withdrawApplication(detail.id, { expectedRevision: detail.revision }))}
-              onSupplement={(text) => void afterAction(supplementApplication(detail.id, { text, expectedRevision: detail.revision }))}
-              onRespondProposal={(accept) => {
-                if (!detail.pendingConfirmation) return;
-                void afterAction(
-                  respondToProposal(detail.id, {
-                    accept,
-                    confirmationId: detail.pendingConfirmation.confirmationId,
-                    expectedRevision: detail.revision,
-                  }),
-                );
-              }}
-            />
-          )}
+          <div>
+            {!detail ? (
+              <p className="text-on-surface-variant">从左侧选一条申请查看详情。</p>
+            ) : (
+              <ApplicationDetailPanel
+                detail={detail}
+                busy={busy}
+                targetLabel={targetLabel}
+                onConfirm={() => {
+                  if (!detail.pendingConfirmation) return;
+                  void afterAction(
+                    confirmApplication(detail.id, { confirmationId: detail.pendingConfirmation.confirmationId, expectedRevision: detail.revision }),
+                  );
+                }}
+                onWithdraw={() => void afterAction(withdrawApplication(detail.id, { expectedRevision: detail.revision }))}
+                onSupplement={(text) => void afterAction(supplementApplication(detail.id, { text, expectedRevision: detail.revision }))}
+                onRespondProposal={(accept) => {
+                  if (!detail.pendingConfirmation) return;
+                  void afterAction(
+                    respondToProposal(detail.id, {
+                      accept,
+                      confirmationId: detail.pendingConfirmation.confirmationId,
+                      expectedRevision: detail.revision,
+                    }),
+                  );
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -241,7 +230,7 @@ function CreateApplicationForm({
   }
 
   return (
-    <div className="mb-4 flex flex-col gap-2 rounded-md border border-outline-variant p-3 text-sm">
+    <div className="mb-4 flex flex-col gap-2 rounded-xl border border-outline-variant bg-surface-container-lowest p-3 text-body-sm">
       <label className="flex flex-col gap-1">
         报名
         <select
@@ -292,7 +281,7 @@ function CreateApplicationForm({
       <button
         onClick={() => void handleSubmit()}
         disabled={submitting || !enrollmentId}
-        className="rounded-md bg-primary text-on-primary py-1.5 disabled:opacity-50"
+        className="rounded-lg bg-primary text-on-primary py-1.5 disabled:opacity-50"
       >
         {submitting ? "提交中…" : "提交申请"}
       </button>
@@ -322,7 +311,7 @@ function ApplicationDetailPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="rounded-md border border-outline-variant p-4">
+      <div className="rounded-xl border border-outline-variant bg-surface-container-lowest p-4">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-title-md">
             {APPLICATION_TYPE_LABEL[detail.type]}申请
@@ -338,16 +327,16 @@ function ApplicationDetailPanel({
       </div>
 
       {detail.status === "draft" && detail.pendingConfirmation && (
-        <div className="rounded-md border border-primary bg-primary-container/10 p-4">
+        <div className="rounded-xl border border-primary bg-primary-container/10 p-4">
           <p className="text-sm mb-2">草稿已生成，确认无误后提交：</p>
-          <button onClick={onConfirm} disabled={busy} className="rounded-md bg-primary text-on-primary px-4 py-1.5 text-sm disabled:opacity-50">
+          <button onClick={onConfirm} disabled={busy} className="rounded-lg bg-primary text-on-primary px-4 py-1.5 text-label-md disabled:opacity-50">
             确认提交
           </button>
         </div>
       )}
 
       {detail.status === "needs_info" && (
-        <div className="rounded-md border border-outline-variant p-4">
+        <div className="rounded-xl border border-outline-variant bg-surface-container-lowest p-4">
           <p className="text-sm mb-2">老师要求补充信息，请在下方回复：</p>
           <textarea
             className="w-full rounded border border-outline-variant px-2 py-1 text-sm mb-2"
@@ -358,7 +347,7 @@ function ApplicationDetailPanel({
           <button
             onClick={() => onSupplement(supplementText)}
             disabled={busy || !supplementText.trim()}
-            className="rounded-md bg-primary text-on-primary px-4 py-1.5 text-sm disabled:opacity-50"
+            className="rounded-lg bg-primary text-on-primary px-4 py-1.5 text-label-md disabled:opacity-50"
           >
             提交补充
           </button>
@@ -366,20 +355,20 @@ function ApplicationDetailPanel({
       )}
 
       {detail.status === "awaiting_student_confirmation" && detail.proposal && detail.pendingConfirmation && (
-        <div className="rounded-md border border-primary bg-primary-container/10 p-4">
+        <div className="rounded-xl border border-primary bg-primary-container/10 p-4">
           <p className="text-sm mb-2">老师提出了方案，请确认：</p>
           {detail.type === "transfer" && <p className="text-sm mb-2">转入：{targetLabel(detail.proposal.targetCohortId)}</p>}
           {detail.type === "refund" && detail.proposal.refundCents !== undefined && (
             <p className="text-sm mb-2">退款金额：¥{centsToYuan(detail.proposal.refundCents)}</p>
           )}
           <div className="flex gap-2">
-            <button onClick={() => onRespondProposal(true)} disabled={busy} className="rounded-md bg-primary text-on-primary px-4 py-1.5 text-sm disabled:opacity-50">
+            <button onClick={() => onRespondProposal(true)} disabled={busy} className="rounded-lg bg-primary text-on-primary px-4 py-1.5 text-label-md disabled:opacity-50">
               接受
             </button>
             <button
               onClick={() => onRespondProposal(false)}
               disabled={busy}
-              className="rounded-md border border-outline-variant px-4 py-1.5 text-sm disabled:opacity-50"
+              className="rounded-lg border border-outline-variant px-4 py-1.5 text-label-md disabled:opacity-50"
             >
               拒绝
             </button>
@@ -391,7 +380,7 @@ function ApplicationDetailPanel({
         <button
           onClick={onWithdraw}
           disabled={busy}
-          className="self-start rounded-md border border-error text-error px-4 py-1.5 text-sm disabled:opacity-50"
+          className="self-start rounded-lg border border-error text-error px-4 py-1.5 text-label-md disabled:opacity-50"
         >
           撤回申请
         </button>
@@ -401,7 +390,7 @@ function ApplicationDetailPanel({
         <h3 className="text-title-sm mb-2">时间线</h3>
         <ul className="flex flex-col gap-2">
           {detail.events.map((ev, i) => (
-            <li key={i} className="text-sm rounded-md border border-outline-variant px-3 py-2">
+            <li key={i} className="text-body-sm rounded-lg border border-outline-variant px-3 py-2">
               <div className="flex items-center justify-between">
                 <span>{eventLabel(ev)}</span>
                 <span className="text-xs text-on-surface-variant">{new Date(ev.createdAt).toLocaleString()}</span>

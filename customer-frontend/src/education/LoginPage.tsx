@@ -13,9 +13,10 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
 
   // 已经登录了还访问 /login：按角色送到对应的落地页，不重复展示表单。
+  // 学员落到聊天首页（"/"）——那是主入口，我的学习/我的申请是侧栏里随时可达的次级页面，不必绕一圈。
   if (!loading && user) {
     const from = (location.state as { from?: string } | null)?.from;
-    return <Navigate to={from ?? (user.role === "teacher" ? "/teacher" : "/my-learning")} replace />;
+    return <Navigate to={from ?? (user.role === "teacher" ? "/teacher" : "/")} replace />;
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -25,7 +26,7 @@ export function LoginPage() {
     try {
       const u = await login(loginName, password);
       const from = (location.state as { from?: string } | null)?.from;
-      navigate(from ?? (u.role === "teacher" ? "/teacher" : "/my-learning"), { replace: true });
+      navigate(from ?? (u.role === "teacher" ? "/teacher" : "/"), { replace: true });
     } catch (err) {
       // 401 统一显示"登录名或密码错误"，不区分是用户名不存在还是密码错——
       // 和后端 education-api 的用户名枚举防护保持一致，前端不能把后端刚堵上的口子又打开。

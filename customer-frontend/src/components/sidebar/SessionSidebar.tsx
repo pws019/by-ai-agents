@@ -1,14 +1,20 @@
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { useSessionsContext } from "../../context/SessionsContext";
 import { useAuth } from "../../education/AuthContext";
 import { Icon } from "../ui/Icon";
 import { SessionListItem } from "./SessionListItem";
 
+const NAV_ITEMS = [
+  { to: "/my-learning", icon: "school", label: "我的学习" },
+  { to: "/my-applications", icon: "assignment", label: "我的申请" },
+] as const;
+
 // 左侧栏宽度由外层 AppLayout 的固定列宽控制；这个组件只负责往固定宽度的容器里填内容。
 // 会话列表状态从 SessionsContext 读，和右侧聊天面板共用同一份，面板新建会话后调 refresh() 这边立刻同步。
 export function SessionSidebar() {
   const { conversationId: activeId } = useParams();
+  const { pathname } = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { conversations, loading, error } = useSessionsContext();
@@ -55,14 +61,23 @@ export function SessionSidebar() {
         </div>
       </nav>
 
-      <div className="px-4 pt-4 border-t border-outline-variant flex flex-col gap-2 text-label-md">
-        <Link to="/my-learning" className="text-secondary hover:text-primary">
-          我的学习
-        </Link>
-        <Link to="/my-applications" className="text-secondary hover:text-primary">
-          我的申请
-        </Link>
-        <div className="flex items-center justify-between text-label-sm text-outline pt-1">
+      <div className="px-2 pt-2 border-t border-outline-variant flex flex-col gap-1">
+        {NAV_ITEMS.map((item) => {
+          const active = pathname === item.to;
+          return (
+            <Link
+              key={item.to}
+              to={item.to}
+              className={`flex items-center gap-2 rounded-r-lg px-3 py-2 text-label-md transition-colors ${
+                active ? "bg-surface-container-high text-primary border-l-2 border-primary" : "text-secondary hover:bg-surface-container-low"
+              }`}
+            >
+              <Icon name={item.icon} className="text-[18px]" />
+              {item.label}
+            </Link>
+          );
+        })}
+        <div className="flex items-center justify-between text-label-sm text-outline px-3 pt-2">
           <span className="truncate">{user?.loginName}</span>
           <button
             type="button"

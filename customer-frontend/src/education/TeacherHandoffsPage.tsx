@@ -1,25 +1,18 @@
 // 老师会话工作台（T-23）：待接管队列、接管/结束接管、给已接管的会话发消息。
 // 授权与状态机全在 education-api（唯一索引 + 带条件 UPDATE + FOR SHARE），这里只负责调用和如实展示冲突，
 // 不在前端重新判断一遍"能不能接管"——跟 TeacherApplicationsPage 是同一个原则。
+// 身份、导航（申请审批/退出）由外层 TeacherLayout 的侧栏提供，这里只管内容。
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router";
-import {
-  ApiError,
-  claimHandoff,
-  getTeacherConversationMessages,
-  listTeacherHandoffs,
-  releaseHandoff,
-  teacherSendChatMessage,
-} from "./api";
+import { Icon } from "../components/ui/Icon";
+import { ApiError, claimHandoff, getTeacherConversationMessages, listTeacherHandoffs, releaseHandoff, teacherSendChatMessage } from "./api";
 import { useAuth } from "./AuthContext";
 import type { ConversationMessage, Handoff } from "./types";
 
-const ROLE_LABEL: Record<ConversationMessage["role"], string> = { user: "学员", assistant: "机器人", teacher: "我", system: "系统" };
 const QUEUE_POLL_MS = 5000;
 const MESSAGES_POLL_MS = 3000;
 
 export function TeacherHandoffsPage() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [handoffs, setHandoffs] = useState<Handoff[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
@@ -109,82 +102,93 @@ export function TeacherHandoffsPage() {
   const othersClaimed = handoffs?.filter((h) => h.status === "claimed" && h.teacherId !== user?.id) ?? [];
 
   return (
-    <div className="min-h-screen bg-surface text-on-surface p-8 max-w-container-max-width mx-auto">
-      <header className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <h1 className="text-headline-sm">会话工作台</h1>
-          <Link to="/teacher" className="text-sm text-primary underline">
-            申请审批
-          </Link>
-        </div>
-        <div className="flex items-center gap-3 text-sm text-on-surface-variant">
-          <span>{user?.loginName}</span>
-          <button onClick={() => void logout()} className="text-primary underline">
-            退出登录
-          </button>
-        </div>
+    <div className="h-full flex flex-col">
+      <header className="flex items-center justify-between h-16 px-gutter border-b border-outline-variant bg-surface shrink-0">
+        <h1 className="text-headline-sm font-semibold text-on-surface">会话工作台</h1>
+        {handoffs && (
+          <span className="text-label-sm text-on-surface-variant">
+            {queued.length > 0 ? `${queued.length} 条待接管` : "队列已清空"}
+          </span>
+        )}
       </header>
 
-      {error && <p className="text-error mb-4">{error}</p>}
+      {error && (
+        <p role="status" className="text-body-sm text-error px-gutter pt-3">
+          {error}
+        </p>
+      )}
 
-      <div className="grid grid-cols-[360px_1fr] gap-6">
-        <div className="flex flex-col gap-6">
-          <HandoffGroup
-            title={`待接管（${queued.length}）`}
-            items={queued}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            action={(h) => (
-              <button
-                onClick={() => void afterAction(claimHandoff(h.id, { expectedRevision: h.revision }))}
-                disabled={busy}
-                className="rounded-md bg-primary text-on-primary px-2 py-1 text-xs disabled:opacity-50"
-              >
-                接管
-              </button>
-            )}
-          />
-          <HandoffGroup title={`我接管的（${myClaimed.length}）`} items={myClaimed} selectedId={selectedId} onSelect={setSelectedId} />
-          <HandoffGroup title={`其他老师接管中（${othersClaimed.length}）`} items={othersClaimed} selectedId={selectedId} onSelect={setSelectedId} />
+      <div className="flex-1 min-h-0 flex">
+        <div className="w-[320px] shrink-0 border-r border-outline-variant h-full overflow-y-auto custom-scrollbar py-4">
+          {handoffs === null ? (
+            <p className="px-4 text-body-sm text-on-surface-variant">加载中…</p>
+          ) : handoffs.length === 0 ? (
+            <p className="px-4 text-body-sm text-outline italic">没有进行中的会话。</p>
+          ) : (
+            <div className="flex flex-col gap-5">
+              <HandoffGroup
+                title="待接管"
+                items={queued}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                action={(h) => (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void afterAction(claimHandoff(h.id, { expectedRevision: h.revision }));
+                    }}
+                    disabled={busy}
+                    className="shrink-0 rounded-lg bg-primary text-on-primary px-2.5 py-1 text-label-sm hover:opacity-90 disabled:opacity-50"
+                  >
+                    接管
+                  </button>
+                )}
+              />
+              <HandoffGroup title="我接管的" items={myClaimed} selectedId={selectedId} onSelect={setSelectedId} tone="mine" />
+              <HandoffGroup title="其他老师接管中" items={othersClaimed} selectedId={selectedId} onSelect={setSelectedId} tone="muted" />
+            </div>
+          )}
         </div>
 
-        <div>
+        <div className="flex-1 min-w-0 h-full">
           {!selected ? (
-            <p className="text-on-surface-variant">从左侧选一条会话查看。</p>
+            <div className="h-full flex flex-col items-center justify-center gap-2 text-on-surface-variant">
+              <Icon name="forum" className="text-[40px] text-outline" />
+              <p className="text-body-sm">从左侧选一条会话查看</p>
+            </div>
           ) : !mine ? (
-            <div className="rounded-md border border-outline-variant p-4">
-              <p className="text-sm text-on-surface-variant">
+            <div className="h-full flex flex-col items-center justify-center gap-3 px-8 text-center">
+              <Icon name={selected.status === "queued" ? "hourglass_top" : "lock"} className="text-[32px] text-outline" />
+              <p className="text-body-sm text-on-surface-variant max-w-sm">
                 {selected.status === "queued" ? "这条还在排队，接管之后才能看到对话内容和发消息。" : "这条正被另一位老师接管，看不到对话内容。"}
               </p>
-              {selected.reason && <p className="text-sm text-on-surface-variant mt-2">学员填写的原因：{selected.reason}</p>}
+              {selected.reason && <p className="text-body-sm text-on-surface-variant">学员填写的原因：{selected.reason}</p>}
             </div>
           ) : (
-            <div className="flex flex-col gap-4">
+            <div className="h-full flex flex-col">
               {selected.summary && (
-                <div className="rounded-md border border-outline-variant p-4">
-                  <p className="text-label-md font-semibold mb-1">交接摘要</p>
-                  <pre className="text-sm text-on-surface-variant whitespace-pre-wrap font-sans">{selected.summary}</pre>
+                <div className="mx-4 mt-4 rounded-xl border border-secondary-container bg-secondary-container/20 p-3">
+                  <p className="text-label-sm font-semibold text-on-secondary-container mb-1 flex items-center gap-1.5">
+                    <Icon name="summarize" className="text-[16px]" />
+                    交接摘要
+                  </p>
+                  <pre className="text-label-sm text-on-surface-variant whitespace-pre-wrap font-sans leading-relaxed">{selected.summary}</pre>
                 </div>
               )}
 
-              <div className="rounded-md border border-outline-variant p-4 flex flex-col gap-2 max-h-[50vh] overflow-y-auto">
+              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 py-4 flex flex-col gap-3">
                 {messages === null ? (
-                  <p className="text-on-surface-variant text-sm">加载中…</p>
+                  <p className="text-body-sm text-on-surface-variant">加载中…</p>
                 ) : messages.length === 0 ? (
-                  <p className="text-on-surface-variant text-sm">还没有消息。</p>
+                  <p className="text-body-sm text-on-surface-variant">还没有消息。</p>
                 ) : (
-                  messages.map((m) => (
-                    <div key={m.id} className="text-sm">
-                      <span className="text-on-surface-variant">{ROLE_LABEL[m.role]}：</span>
-                      <span>{m.content}</span>
-                    </div>
-                  ))
+                  messages.map((m) => <TeacherViewBubble key={m.id} message={m} />)
                 )}
               </div>
 
-              <div className="flex gap-2">
+              <div className="px-4 pb-3 flex items-center gap-2">
                 <input
-                  className="flex-1 rounded border border-outline-variant px-2 py-1 text-sm"
+                  className="flex-1 rounded-xl border border-outline-variant bg-surface-container-lowest px-3 py-2 text-body-sm focus:outline-none focus:border-primary"
                   value={reply}
                   onChange={(e) => setReply(e.target.value)}
                   onKeyDown={(e) => {
@@ -193,18 +197,25 @@ export function TeacherHandoffsPage() {
                   placeholder="回复学员…"
                   disabled={busy}
                 />
-                <button onClick={() => void send()} disabled={busy || !reply.trim()} className="rounded-md bg-primary text-on-primary px-3 py-1.5 text-sm disabled:opacity-50">
-                  发送
+                <button
+                  onClick={() => void send()}
+                  disabled={busy || !reply.trim()}
+                  className="h-10 w-10 shrink-0 rounded-lg flex items-center justify-center bg-primary text-on-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Icon name="send" filled />
                 </button>
               </div>
 
-              <button
-                onClick={() => void afterAction(releaseHandoff(selected.id, { expectedRevision: selected.revision }))}
-                disabled={busy}
-                className="self-start rounded-md border border-outline-variant px-3 py-1.5 text-sm disabled:opacity-50"
-              >
-                结束接管（会话交还机器人）
-              </button>
+              <div className="px-4 pb-4">
+                <button
+                  onClick={() => void afterAction(releaseHandoff(selected.id, { expectedRevision: selected.revision }))}
+                  disabled={busy}
+                  className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-outline-variant px-3 py-2 text-label-md text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50"
+                >
+                  <Icon name="logout" className="text-[16px]" />
+                  结束接管，会话交还机器人
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -219,32 +230,84 @@ function HandoffGroup({
   selectedId,
   onSelect,
   action,
+  tone = "queued",
 }: {
   title: string;
   items: Handoff[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   action?: (h: Handoff) => ReactNode;
+  tone?: "queued" | "mine" | "muted";
 }) {
   if (items.length === 0) return null;
   return (
     <div>
-      <p className="text-label-sm text-on-surface-variant mb-2">{title}</p>
-      <ul className="flex flex-col gap-2">
-        {items.map((h) => (
-          <li key={h.id} className="flex items-center gap-2">
-            <button
-              onClick={() => onSelect(h.id)}
-              className={`flex-1 text-left rounded-md border px-3 py-2 text-sm truncate ${
-                h.id === selectedId ? "border-primary bg-primary-container/10" : "border-outline-variant"
-              }`}
-            >
-              {h.reason || "（学员未填写原因）"}
-            </button>
-            {action?.(h)}
-          </li>
-        ))}
+      <p className="text-label-sm font-semibold text-outline uppercase tracking-wider px-4 mb-1.5">
+        {title}（{items.length}）
+      </p>
+      <ul className="flex flex-col gap-1 px-2">
+        {items.map((h) => {
+          const active = h.id === selectedId;
+          // 选中的按钮和"接管"按钮是并列的两个 <button>，不能把后者嵌进前者——按钮不能嵌套按钮（无效 HTML，React 会报水合错误）。
+          return (
+            <li key={h.id} className={`flex items-center gap-1 rounded-lg transition-colors ${active ? "bg-surface-container-high" : "hover:bg-surface-container-low"}`}>
+              <button onClick={() => onSelect(h.id)} className="flex-1 min-w-0 flex items-center gap-2 px-2.5 py-2 text-left">
+                <div
+                  className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                    tone === "mine" ? "bg-primary-container text-on-primary-container" : tone === "muted" ? "bg-surface-container-high text-outline" : "bg-secondary-container text-on-secondary-container"
+                  }`}
+                >
+                  <Icon name={tone === "mine" ? "chat" : tone === "muted" ? "person" : "hourglass_top"} className="text-[16px]" />
+                </div>
+                <span className={`flex-1 min-w-0 truncate text-body-sm ${active ? "text-on-surface" : "text-on-surface-variant"}`}>
+                  {h.reason || "（学员未填写原因）"}
+                </span>
+              </button>
+              {action && <span className="pr-2">{action(h)}</span>}
+            </li>
+          );
+        })}
       </ul>
+    </div>
+  );
+}
+
+const ROLE_LABEL: Record<ConversationMessage["role"], string> = { user: "学员", assistant: "机器人", teacher: "我", system: "系统" };
+
+// 精简版的消息气泡，专给老师工作台用：跟学员端 MessageBubble 是同一套视觉语言（学员靠右蓝色、
+// 老师和机器人靠左但图标/配色不同），但这里不需要工具状态、流式占位那些聊天专属的复杂度。
+function TeacherViewBubble({ message }: { message: ConversationMessage }) {
+  if (message.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[75%] bg-primary text-on-primary px-3.5 py-2 rounded-t-xl rounded-bl-xl whitespace-pre-wrap break-words">
+          <p className="text-body-sm">{message.content}</p>
+        </div>
+      </div>
+    );
+  }
+  const isTeacher = message.role === "teacher";
+  return (
+    <div className="flex justify-start">
+      <div className="flex gap-2.5 max-w-[75%]">
+        <div
+          className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
+            isTeacher ? "bg-secondary-container" : "bg-surface-container-highest"
+          }`}
+        >
+          <Icon name={isTeacher ? "support_agent" : "smart_toy"} filled className={`text-[15px] ${isTeacher ? "text-on-secondary-container" : "text-primary"}`} />
+        </div>
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <span className="text-label-sm text-on-surface-variant">{ROLE_LABEL[message.role]}</span>
+          <div
+            className={`px-3.5 py-2 rounded-t-xl rounded-br-xl border whitespace-pre-wrap break-words ${
+              isTeacher ? "bg-secondary-container/20 border-secondary-container" : "bg-surface-container-low border-surface-container"
+            }`}
+          >
+            <p className="text-body-sm text-on-surface">{message.content}</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
