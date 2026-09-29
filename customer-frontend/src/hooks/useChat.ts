@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { chatApi, createConversation, newClientMessageId } from "../lib/chat/api";
 import { confirmDraft, openConversation, requestHandoff as requestHandoffFlow, sendTurn } from "../lib/chat/session";
-import { emptyChat, withNotice, type ChatState } from "../lib/chat/state";
+import { emptyChat, fromServer, withNotice, type ChatState } from "../lib/chat/state";
+
+const HANDOFF_POLL_MS = 4000;
 
 type UseChatOptions = {
   conversationId: string | undefined;
@@ -53,6 +55,25 @@ export function useChat({ conversationId, onCreated }: UseChatOptions) {
       flow.current++;
     };
   }, [conversationId, update]);
+
+  // 排队/接管期间（mode 不是 bot）：SSE 只在"这次发送/这次运行"期间存在，运行一结束连接就关了。
+  // 老师异步回复、学员在别处发的话，都不会通过当前这条（早已关闭的）连接推给这边——轮询是这套
+  // "围绕一次运行设计"的架构下最小的修补，不是真正的推送。mode 回到 bot 就停（下一次 render 发现
+  // 条件不满足，不会再开定时器）。
+  useEffect(() => {
+    if (!conversationId || state.mode === "bot") return;
+    const timer = setInterval(() => {
+      if (stateRef.current.phase !== "idle") return; // 有别的操作正在进行（发送/确认/转人工），这一轮跳过
+      void chatApi
+        .getMessages(conversationId)
+        .then((res) => {
+          if (stateRef.current.phase !== "idle") return; // 拿到结果时状态可能已经变了，别覆盖正在发生的事
+          update(fromServer(res.items, res.pendingConfirmation, res.mode, { notice: stateRef.current.notice }));
+        })
+        .catch(() => {}); // 偶尔一次失败不打扰用户，下一次自然会再试
+    }, HANDOFF_POLL_MS);
+    return () => clearInterval(timer);
+  }, [conversationId, state.mode, update]);
 
   const drive = useCallback(
     async (gen: AsyncGenerator<ChatState>, token: number) => {

@@ -35,8 +35,9 @@ export function ChatPanel({ conversationId }: ChatPanelProps) {
   const isEmptyDraft = !conversationId && state.messages.length === 0;
 
   // 最后一条助手消息还没有文字、正在生成：给出"正在……"的提示（有工具在跑则说明是哪个）；断线重连时显示重连提示。
+  // mode 不是 bot（排队中/接管中）时不会有机器人回复：不显示这个提示，否则会闪一下又消失（那条占位气泡会被 handoff.status 清掉）。
   const last = state.messages.at(-1);
-  const generating = state.phase === "streaming" && last?.role === "assistant" && last.state === "streaming";
+  const generating = state.phase === "streaming" && state.mode === "bot" && last?.role === "assistant" && last.state === "streaming";
   const statusLabel =
     state.phase === "reconnecting"
       ? "正在确认处理结果…"
