@@ -8,6 +8,7 @@ import type { Db } from "../db/pool.js";
 import { conversations, messages } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import type { AgentClient, AgentEvent } from "./agentClient.js";
+import { findActiveHandoff, toHandoff } from "../handoffs/handoffs.js";
 import { findPendingConfirmationForConversation } from "../routes/applications.js";
 import { findOwnedConversation, latestRun, startMessageRun, startResumeRun } from "./runs.js";
 import { beginRun, type BeginResult, type RunChannel } from "./supervisor.js";
@@ -84,6 +85,9 @@ export function createConversationRoutes(db: Db, deps: ChatDeps = {}): Hono {
     return c.json({
       items: recent.reverse().map((m) => ({ id: m.id, role: m.role, content: m.content, runId: m.runId, createdAt: m.createdAt })),
       run: await latestRun(db, conversation.id),
+      // 排队/人工接管的状态：前端据此显示"排队中 / 老师处理中"，刷新页面后也能找回。
+      mode: conversation.mode,
+      handoff: await findActiveHandoff(db, conversation.id).then((h) => (h ? toHandoff(h, "student") : null)),
       // 断线重连后找回待确认的草稿：确认卡在实时流里发出过，但不在消息里。
       pendingConfirmation: await findPendingConfirmationForConversation(db, conversation.id),
     });
@@ -108,6 +112,14 @@ export function createConversationRoutes(db: Db, deps: ChatDeps = {}): Hono {
 
     const started = await startMessageRun(db, { conversationId: conversation.id, clientMessageId, text });
     if (started.kind === "busy") return errorJson(c, 409, "RUN_IN_PROGRESS", "上一条消息还在处理中");
+    if (started.kind === "closed") return errorJson(c, 409, "INVALID_STATE", "这个会话已经关闭");
+    if (started.kind === "recorded") {
+      // 排队或老师接管中：消息已存下来给老师看，机器人不回复。响应仍是 SSE，只有一个 handoff.status 事件，
+      // 这样前端沿用同一套流处理。这个事件不属于任何 Agent 运行，runId 取被记录消息的 id，只用于客户端关联。
+      return replayOnce(c, {
+        eventId: "1", conversationId: conversation.id, runId: started.userMessageId, type: "handoff.status", payload: { mode: started.mode },
+      });
+    }
     if (started.kind === "duplicate") {
       const { run, assistantMessage } = started;
       if (run.status === "running") return errorJson(c, 409, "RUN_IN_PROGRESS", "这条消息正在处理中");
@@ -132,6 +144,7 @@ export function createConversationRoutes(db: Db, deps: ChatDeps = {}): Hono {
 
     const started = await startResumeRun(db, conversation.id);
     if (started.kind === "busy") return errorJson(c, 409, "RUN_IN_PROGRESS", "上一条消息还在处理中");
+    if (started.kind === "handoff_active") return errorJson(c, 409, "HANDOFF_ACTIVE", "这个会话正在由老师处理，机器人暂时不会回复");
     return respondToBegin(c, await beginRun(deps_, { runId: started.runId, ownerId: actor.id, conversationId: conversation.id, resume: true }));
   });
 

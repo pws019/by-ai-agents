@@ -95,7 +95,8 @@
           "type": "object",
           "required": ["mode"],
           "properties": {"mode": {"enum": ["bot", "queued", "human", "closed"]}},
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "会话在排队/人工接管期间学员发言时的响应：消息已记录、机器人不回复。该事件不属于任何 Agent 运行，runId 取被记录消息的 id，仅用于客户端关联。"
         }
       }
     },

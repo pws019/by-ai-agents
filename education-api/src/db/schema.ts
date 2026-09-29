@@ -183,6 +183,20 @@ export const conversations = app.table("conversations", {
   ...timestamps,
 });
 
+export const handoffs = app.table("handoffs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  conversationId: uuid("conversation_id").notNull(),
+  status: text("status").notNull().$type<"queued" | "claimed" | "released">(),
+  teacherId: uuid("teacher_id"),
+  reason: text("reason"),
+  summary: text("summary"),
+  revision: integer("revision").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  releasedAt: timestamp("released_at", { withTimezone: true }),
+});
+
 export const runs = app.table("runs", {
   id: uuid("id").primaryKey().defaultRandom(),
   conversationId: uuid("conversation_id").notNull(),

@@ -15,12 +15,19 @@ export interface RunView {
   errorCode: string | null;
 }
 
+export type ConversationMode = "bot" | "queued" | "human" | "closed";
+
 export type StartMessageResult =
   | { kind: "started"; runId: string; userMessageId: string }
   // 同一个 clientMessageId 之前已经提交过：不再新建任何东西，把原来的结果交还给调用方。
   | { kind: "duplicate"; run: RunView; assistantMessage: { id: string; content: string } | null }
   // 这个会话已经有一个运行中的 run（租约未过期）。
-  | { kind: "busy"; runId: string | null };
+  | { kind: "busy"; runId: string | null }
+  // 会话正在排队或由老师接管：消息只被记录（老师要看得到），不启动机器人（AC-012）。
+  // mode 是"此刻"的会话 mode：重试一条早先记录下来的消息时，会话可能已经回到 bot，
+  // 这时依然只返回"已记录"，不会因为机器人回来了就补一次自动回复——那条消息当时是老师在处理的。
+  | { kind: "recorded"; mode: ConversationMode; userMessageId: string }
+  | { kind: "closed" };
 
 class DuplicateMessage extends Error {}
 
@@ -68,6 +75,17 @@ export async function startMessageRun(
 
   try {
     return await db.transaction(async (tx) => {
+      // FOR SHARE：与"老师接管 / 结束接管"对 conversations 行的 UPDATE 互斥。读到 bot 的这个事务提交之前，
+      // 接管不能把 mode 改成 human——所以"老师接管之后才到达的消息，一定看到 human"，机器人不会抢答。
+      // （接管前已经开始的运行不受影响，会照常跑完；这里保证的是"接管之后不会再启动新的运行"。）
+      const [conversation] = await tx
+        .select({ mode: conversations.mode })
+        .from(conversations)
+        .where(eq(conversations.id, args.conversationId))
+        .for("share");
+      if (conversation?.mode === "closed") return { kind: "closed" } as const;
+      if (conversation && conversation.mode !== "bot") return recordOnly(tx, args, conversation.mode);
+
       const run = await openRun(tx, args.conversationId, "message");
       const [message] = await tx
         .insert(messages)
@@ -96,13 +114,25 @@ export async function startMessageRun(
   }
 }
 
-export type StartResumeResult = { kind: "started"; runId: string } | { kind: "busy"; runId: string | null };
+export type StartResumeResult =
+  | { kind: "started"; runId: string }
+  | { kind: "busy"; runId: string | null }
+  // 会话正在排队或由老师接管：恢复 Agent 会让机器人开口，此刻不允许（学员在业务 API 上的确认本身不受影响）。
+  | { kind: "handoff_active"; mode: ConversationMode };
 
 /** 开启一次"学员已在界面确认，让 Agent 恢复"的运行：没有用户消息，也就没有可去重的 clientMessageId。 */
 export async function startResumeRun(db: Db, conversationId: string): Promise<StartResumeResult> {
   try {
-    const run = await db.transaction((tx) => openRun(tx, conversationId, "resume"));
-    return { kind: "started", runId: run.id };
+    return await db.transaction(async (tx): Promise<StartResumeResult> => {
+      const [conversation] = await tx
+        .select({ mode: conversations.mode })
+        .from(conversations)
+        .where(eq(conversations.id, conversationId))
+        .for("share");
+      if (conversation && conversation.mode !== "bot") return { kind: "handoff_active", mode: conversation.mode };
+      const run = await openRun(tx, conversationId, "resume");
+      return { kind: "started", runId: run.id };
+    });
   } catch (err) {
     if (isUniqueViolation(err)) return { kind: "busy", runId: await runningRunId(db, conversationId) };
     throw err;
@@ -191,15 +221,42 @@ async function runningRunId(db: Db, conversationId: string): Promise<string | nu
   return row?.id ?? null;
 }
 
+/** 会话在排队/人工接管中：把学员的消息存下来（无 run），不启动机器人。同一个 clientMessageId 重复提交只存一条。 */
+async function recordOnly(
+  tx: Pick<Db, "select" | "insert" | "update">,
+  args: { conversationId: string; clientMessageId: string; text: string },
+  mode: ConversationMode,
+): Promise<StartMessageResult> {
+  const [inserted] = await tx
+    .insert(messages)
+    .values({ conversationId: args.conversationId, role: "user", content: args.text, clientMessageId: args.clientMessageId })
+    .onConflictDoNothing()
+    .returning({ id: messages.id });
+  if (inserted) {
+    await tx.update(conversations).set({ updatedAt: sql`now()` }).where(eq(conversations.id, args.conversationId));
+    return { kind: "recorded", mode, userMessageId: inserted.id };
+  }
+  const [existing] = await tx
+    .select({ id: messages.id })
+    .from(messages)
+    .where(and(eq(messages.conversationId, args.conversationId), eq(messages.clientMessageId, args.clientMessageId)));
+  return { kind: "recorded", mode, userMessageId: existing!.id };
+}
+
 async function findDuplicate(db: Db, conversationId: string, clientMessageId: string): Promise<StartMessageResult | null> {
   await expireStaleRuns(db, conversationId); // 重试一个早已死掉的 run，应当看到"失败"而不是永远"生成中"
   const [row] = await db
-    .select({ id: runs.id, kind: runs.kind, status: runs.status, errorCode: runs.errorCode })
+    .select({ messageId: messages.id, runId: runs.id, kind: runs.kind, status: runs.status, errorCode: runs.errorCode })
     .from(messages)
-    .innerJoin(runs, eq(runs.id, messages.runId))
+    .leftJoin(runs, eq(runs.id, messages.runId))
     .where(and(eq(messages.conversationId, conversationId), eq(messages.clientMessageId, clientMessageId)));
   if (!row) return null;
-  const run: RunView = row;
+  if (row.runId === null) {
+    // 这条消息是在排队/人工接管期间只记录、没有启动运行的：重试它不会启动机器人，只是告诉调用方"已记录"。
+    const [conversation] = await db.select({ mode: conversations.mode }).from(conversations).where(eq(conversations.id, conversationId));
+    return { kind: "recorded", mode: conversation?.mode ?? "bot", userMessageId: row.messageId };
+  }
+  const run: RunView = { id: row.runId, kind: row.kind!, status: row.status!, errorCode: row.errorCode };
   let assistantMessage: { id: string; content: string } | null = null;
   if (run.status === "completed") {
     const [a] = await db

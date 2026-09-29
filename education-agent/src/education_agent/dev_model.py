@@ -5,7 +5,8 @@
 两种模式的结果必须分开报告（design.md）。
 
 行为（都是关键词规则，读的是本轮用户消息之后的工具结果）：
-- 分类：要办理"退费/转班/换班"→ application；询问已有申请状态或其它 → query（见 is_application_request）。
+- 分类：明确要人工（转人工/找老师…）→ handoff；要办理"退费/转班/换班"→ application；询问已有申请状态或其它 → query
+  （见 is_application_request）。
 - query：课表 → 先查报名再查该报名的课表；进度 → 先查报名再查进度；可转班期 → 先查报名再查转班目标；
   申请状态 → 查我的申请；招生/价格 → 查当前招生；其它 → 查报名。
 - application：先查报名；转班再查转班目标；然后起草（prepareApplication）。草稿一出现循环就会停下等确认（不由本模型控制）。
@@ -19,6 +20,7 @@ from .model.base import Message, ModelReply, OnText, ToolCall
 
 APPLICATION_WORDS = ("退费", "转班", "换班")
 STATUS_WORDS = ("怎么样", "进度", "状态", "到哪", "批了", "批准")
+HANDOFF_WORDS = ("转人工", "人工客服", "找老师", "找真人", "真人客服")
 
 
 def is_application_request(text: str) -> bool:
@@ -85,6 +87,9 @@ def _last_user_text(messages: list[Message]) -> str:
 
 
 def _classify(text: str) -> str:
+    # 明确要人工优先于其它意图："我要转人工处理退费"是在找人，不是在起草退费。
+    if any(w in text for w in HANDOFF_WORDS):
+        return "handoff"
     return "application" if is_application_request(text) else "query"
 
 

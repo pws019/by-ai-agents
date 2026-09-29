@@ -10,10 +10,12 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from education_agent.graphs.handoff import REASON_STUDENT_REQUEST
 from education_agent.graphs.student_graph import (
     REPLY_APPLICATION_NOT_FOUND,
     REPLY_AUTH_EXPIRED,
     REPLY_DRAFT_CHANGED,
+    REPLY_HANDOFF,
     REPLY_STILL_DRAFT,
     REPLY_BUDGET_EXHAUSTED,
     REPLY_NEEDS_CONFIRMATION,
@@ -425,3 +427,56 @@ async def test_emitting_events_does_not_change_what_ainvoke_returns():
     streamed_h = Harness(script())
     events = await collect_events(streamed_h, "hi")
     assert plain["reply"] == "你好呀" and "".join(e["text"] for e in events) == "你好呀"
+
+
+# ---- handoff 分支（T-22b）-----------------------------------------------------------------
+# 学员明确要转人工：纯代码分支，拼交接摘要、发 handoff.requested 事件，固定话术回复；不再调用模型、不调用任何工具。
+
+async def test_handoff_branch_emits_request_and_replies_with_fixed_text_without_further_model_or_tool_calls():
+    h = Harness([route("handoff")], checkpointer=InMemorySaver())  # 脚本只有一条：分类。再调用模型就会 AssertionError
+    events = await collect_events(h, "我要转人工，找老师聊聊")
+
+    requested = [e for e in events if e["type"] == "handoff.requested"]
+    assert len(requested) == 1
+    assert requested[0]["reason"] == REASON_STUDENT_REQUEST
+    assert "“我要转人工，找老师聊聊”" in requested[0]["summary"]
+
+    assert len(h.model.calls) == 1, "只有分类这一次模型调用"
+    assert h.requests == [], "转人工不查任何业务数据"
+    snap = await h.snapshot()
+    assert snap.next == (), "图正常结束，没有停在确认卡上"
+    assert snap.values["stop_reason"] == "handoff_requested"
+    assert snap.values["reply"] == REPLY_HANDOFF
+    assert snap.values["messages"][-1] == {"role": "assistant", "content": REPLY_HANDOFF}
+
+
+async def test_handoff_summary_uses_verified_tool_results_from_earlier_turns_but_not_the_assistants_words():
+    h = Harness([
+        route("query"),
+        ModelReply(tool_calls=(call("getMyEnrollment", {}),)),
+        ModelReply(text="我猜你今天就能学完全部课程。"),
+        route("handoff"),
+    ], checkpointer=InMemorySaver())
+    await h.say("我有几个班？")
+    events = await collect_events(h, "转人工")
+
+    summary = next(e for e in events if e["type"] == "handoff.requested")["summary"]
+    assert "报名 1 个" in summary, "来自工具的成功返回"
+    assert "“我有几个班？”" in summary and "“转人工”" in summary
+    assert "我猜" not in summary, "模型说过的话不是核验过的事实"
+    assert TOKEN not in summary and CONFIRMATION_ID not in summary
+
+
+async def test_handoff_event_is_the_only_thing_emitted_no_text_deltas_after_handoff():
+    h = Harness([route("handoff")], checkpointer=InMemorySaver())
+    events = await collect_events(h, "找老师")
+    assert [e["type"] for e in events] == ["handoff.requested"]
+
+
+async def test_route_label_must_match_exactly_to_reach_handoff():
+    # "我觉得应该转人工吧" 不是标签：走默认分支 query，不会因为里面有"转人工"三个字就触发接管。
+    h = Harness([route("我觉得应该转人工吧"), ModelReply(text="ok")], checkpointer=InMemorySaver())
+    events = await collect_events(h, "嗯")
+    assert not [e for e in events if e["type"] == "handoff.requested"]
+    assert (await h.snapshot()).values["branch"] == "query"
+

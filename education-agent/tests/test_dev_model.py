@@ -9,7 +9,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from education_agent.dev_model import DemoModel
-from education_agent.graphs.student_graph import REPLY_NEEDS_CONFIRMATION, RunScope, build_student_graph
+from education_agent.graphs.student_graph import REPLY_HANDOFF, REPLY_NEEDS_CONFIRMATION, RunScope, build_student_graph
 from education_agent.main import ConfigError, Settings, build_model, load_settings
 from education_agent.tools.context import RunContext
 from education_agent.tools.contracts import TOOL_SPECS
@@ -174,6 +174,15 @@ async def test_classification_uses_only_the_latest_user_message():
     assert first["branch"] == "application"
     second = await say(graph, "我的课表")
     assert second["branch"] == "query"
+
+
+@pytest.mark.parametrize("text", ["我要转人工", "帮我找老师", "请给我人工客服", "找真人聊聊", "我要转人工处理退费"])
+async def test_asking_for_a_human_goes_to_handoff_and_touches_no_business_data(text):
+    # 最后一句同时带"退费"：明确要人工优先于办理意图，绝不能因此去起草申请。
+    api = Api()
+    out = await say(make(api), text)
+    assert out["branch"] == "handoff" and out["reply"] == REPLY_HANDOFF
+    assert api.requests == []
 
 
 # ---- 服务入口配置 -------------------------------------------------------------------------

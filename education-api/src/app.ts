@@ -7,6 +7,7 @@ import { denyAgentChannel, withActor } from "./auth/middleware.js";
 import { createHttpAgentClient, type AgentClient } from "./chat/agentClient.js";
 import { createConversationRoutes } from "./chat/routes.js";
 import { createDb } from "./db/pool.js";
+import { createHandoffRoutes } from "./handoffs/routes.js";
 import { withRequestId } from "./http/request-id.js";
 import { requireSameOrigin } from "./http/same-origin.js";
 import { createApplicationRoutes } from "./routes/applications.js";
@@ -47,6 +48,7 @@ export function createApp(
   api.route("/", createCatalogRoutes(db));
   api.route("/", createCohortRoutes(db));
   api.route("/", createConversationRoutes(db, { agent, internalSecret: internalAuthSecret, heartbeatIntervalMs: opts?.heartbeatIntervalMs }));
+  api.route("/", createHandoffRoutes(db));
   api.route("/", createMeRoutes(db));
   api.route("/", createTeacherRoutes(db));
 

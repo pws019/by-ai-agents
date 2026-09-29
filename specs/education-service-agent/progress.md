@@ -1,6 +1,6 @@
 # 进度记录
 
-更新：2026-09-23。M1（业务事实与身份，T-06～T-11）全部完成。M2（申请闭环，先不用模型）**全部完成**（T-12～T-17），验收证据见下表。M2 阶段门槛（讲解）已过，L-02 独立练习待做。M3 进行中：T-18、T-19 已完成（2026-09-25，T-19 为 mock 模型）；T-20 已完成（2026-09-26）；T-21 已完成（2026-09-26）；下一步 T-22（转人工）。
+更新：2026-09-23。M1（业务事实与身份，T-06～T-11）全部完成。M2（申请闭环，先不用模型）**全部完成**（T-12～T-17），验收证据见下表。M2 阶段门槛（讲解）已过，L-02 独立练习待做。M3 进行中：T-18、T-19 已完成（2026-09-25，T-19 为 mock 模型）；T-20 已完成（2026-09-26）；T-21 已完成（2026-09-26）；T-22 已完成（2026-09-28）；下一步 T-23（老师会话工作台）。
 
 ## 1. 任务状态与验证证据
 
@@ -45,8 +45,10 @@
 **过程中的发现**：①开发库未执行 0008 迁移，老师队列页 500（`source_run_id` 不存在）——是浏览器验证顺带发现的；开发库拉取新迁移后须执行 `npm run migrate`（已写入 README 与 `.env.example` 说明）。②我曾误执行 `git checkout -- package-lock.json` 丢掉了未提交的锁文件改动，发现后用 `npm install --package-lock-only` 重新生成并重验类型检查/测试/构建。③验证收尾时我写了一条不存在的表名使清理事务整体回滚，发现（计数非零）后重做，最终会话/运行/消息/检查点均为 0。
 **联调遗留**：li 名下多了一份"已撤回"的退费申请（申请已被真实确认提交后经业务 API 撤回；审计事件表追加式不可删），其余数据已清理。
 **限制**：①**重试会在服务端历史里留下两条相同的用户消息**（第一条对应失败的运行，因为"重试要换新的 clientMessageId"），刷新后用户会看到同一句话出现两次——后续可让消息接口带上每条消息所属运行的状态，前端隐藏失败运行的用户消息；②工具状态标签只在实时流里有，刷新/断线恢复后（以服务端记录重建）不再显示（契约不持久化工具状态）；③界面没有自动化测试；④假模型只能证明界面与编排，不代表真实模型效果；⑤"暂不提交"只是本地收起，刷新后确认卡会再出现（草稿仍在业务库里）；⑥聊天页无重命名/删除会话（契约没有）。
-**下一步 T-22**：转人工（requestHandoff、队列、老师接管，AC-012）。
+（T-22 已完成，见下一行。）
 |
+| T-22 人工队列、claim/release、摘要及机器人暂停 | 完成（2026-09-28；Agent 侧用确定性假模型，摘要为确定性代码） | **22a 数据与接口**：迁移 `0009_handoffs.sql`（`handoffs` 表：status queued/claimed/released、teacher_id、reason、summary、revision；CHECK 让状态与字段互相印证；部分唯一索引 `handoffs_one_active_per_conversation` 保证同一会话至多一条进行中的接管；开发库已执行该迁移）；`handoffs/handoffs.ts`（`requestHandoff`/`claimHandoff`/`releaseHandoff`/`teacherSendMessage`，全部是带条件的 UPDATE，会话 mode 与 handoff 状态在同一事务里一起变）；`handoffs/routes.ts`（`POST /conversations/:id/handoff`、`POST /teacher/handoffs/:id/claim|release`、`POST /teacher/conversations/:id/messages`）。**机器人暂停（AC-012）**：`startMessageRun` 在事务里用 `FOR SHARE` 读会话 mode，queued/human 时只记录学员消息（无 run）、不启动机器人，响应是只含一个 `handoff.status` 的 SSE；`/resume` 在接管中返回 409 `HANDOFF_ACTIVE`；重试一条当时只被记录的消息，不会在机器人回来后补答；`GET messages` 增加 `mode` 与 `handoff`。**22b Agent 侧**：`graphs/handoff.py`（交接摘要：确定性代码，只用工具成功返回和学员原话，模型的话不进摘要，每节都出现、空的写“无”，坏数据不崩）；图新增 `handoff` 分支（`route` 多一个标签，纯代码节点，发 `handoff.requested` 事件，固定话术，不再调用模型和工具）；BFF `supervisor.consume` 收到 `handoff.requested` 后落库（会话取自本次运行、字段只收字符串并截断、幂等），原始事件与摘要不转发给浏览器，浏览器只收到 `handoff.status`；学员侧接口不返回 `summary`，只有老师的 claim/release 响应带它。**验证**：education-api `npm test` 218 passed（新增 `handoffs.test.ts` 33 个：真实临时库，含并发抢占、FOR SHARE 互斥、约束）；education-agent `uv run pytest` 132 passed、4 skipped（新增摘要 9、图分支 4、假模型分类 5）；`npm run contracts:check` lint 0 error、16 项 PASS。**反向验证** 25 个变异全部被抓到：`FOR SHARE`（startMessageRun/startResumeRun/teacherSendMessage 各一）、claim 不要求 queued、release 不要求接管人、startMessageRun 不看 mode（机器人抢答）、findDuplicate 认不出只记录的消息、requestHandoff 不要求 bot、resume 不看 mode、老师发消息不校验接管人、学员侧返回 summary、摘要引用模型的话/不列工具失败/空节省略/引用全部学员消息/申请保留最早状态、handoff 节点不发事件/respond 缺话术/路由白名单缺 handoff/假模型把 handoff 排在 application 之后、BFF 转发原始事件/会话取自事件/不校验类型不截断。其中 `FOR SHARE` 最初有测试盲区：只测了“别人持锁时接管会等”，没测业务函数自己拿锁，删掉 `.for("share")` 测试仍全绿；改为让另一个连接持有未提交的 UPDATE、再调用业务函数并断言它必须等待，补上后才变红。**真实端到端**（真 education-api + 真 education-agent(mock) + 真 Postgres，脚本 24 项检查）：学员先正常问课表 → 说“我要转人工” → 浏览器只收到 `handoff.status(queued)` 与固定话术；库里摘要含学员原话和“报名/课表”两条已核验事实；排队期间再发言只记录、无新 run；alice 接管、bruce 再抢 409 INVALID_STATE；接管后学员发言只有 `handoff.status(human)`、无新 run；老师回复 201、未接管的老师 403；别的老师不能结束 403；alice 结束后会话回 bot，下一句机器人正常回答。联调数据已清理（会话/消息/run/handoff/checkpoint）。**限制**：①Agent 自动转人工（证据不足无法澄清、工具持续失败）未做，目前只有学员明确要求这一个触发；②结束接管后机器人恢复时，Agent 的 checkpoint 里没有接管期间老师与学员的对话，机器人不知道老师说过什么（业务库是产品可见历史、checkpoint 是图内部状态，两者不合并）；③接管前已经开始的运行会照常跑完（只保证接管之后不再启动新运行）；④没有老师侧列表接口（待接管队列、我接管的会话），T-23 做工作台时补；⑤前端未接入：学员没有“转人工”按钮，`handoff.status` 与 `HANDOFF_ACTIVE` 还没有界面反馈，确认后恢复遇到 `HANDOFF_ACTIVE` 会被当成普通错误（T-23）；⑥会话 `closed` 没有任何入口能设置，只有防御性处理 |
+
 请求体 `text` 与 `resume` 二选一，否则 422；`resume` 时无挂起确认则在开流前返回 409 `NOT_AWAITING_CONFIRMATION`；SSE 事件 `{eventId,conversationId,runId,type,payload}`，
 类型 message.delta/tool.status/application.confirmation/message.completed/run.error，completed 为最后一个正常事件并带完整文本；异常只给固定 `run.error{INTERNAL}`，细节仅进服务端日志用 runId 关联）。
 `tests/test_agent_server.py` 15 个用例（ASGI，复用 Harness）：认证、事件序列与 eventId 递增、确认卡事件、恢复及不可重复恢复、他人同 conversationId 得到独立线程且不动我的挂起确认、错误脱敏、流里没有工作证。
@@ -340,6 +342,20 @@ education-api 全量 144 passed。
 | 工具卡片只显示"工具名 + 状态"，不再展示参数与结果 | 契约 `tool.status` 要求脱敏（不含参数与返回值） |
 | 拆分：21a 后端前置（含入库的开发用假模型、Agent 服务入口）→ 21b 前端数据层（纯函数可测）→ 21c 界面与浏览器验证 | 前端没有测试框架，把 SSE 解析和事件→状态的转换写成纯函数以便测试；界面用真实浏览器验证 |
 
+### T-22 设计决定（采用推荐方案，未逐项请示；用户可推翻）
+
+| 决定 | 理由 |
+|---|---|
+| Agent 不直接调用 handoff 接口，通过 `handoff.requested` 事件交给 BFF 落库 | 会话是 BFF 的（业务 API 对 Agent 通道关闭了 `/conversations/*`）；Agent 只表达“我认为该转人工”，不改会话状态；事件里夹带的会话 id 不被采信，归属取自这次运行 |
+| 转人工做成图里的纯代码分支，不做成模型可调用的 `requestHandoff` 工具（design.md 工具清单里列过） | 转人工之后机器人本来就该闭嘴；“让模型自己决定要不要把会话交出去”比显式路由多一条可被提示词注入操纵的路径。将来“证据不足/工具持续失败”的自动触发也应由代码判定 |
+| 交接摘要用确定性代码，不用模型 | F-006 要求“不可包含猜测事实”，模型总结保证不了；只收工具成功返回与学员原话，模型说过的话不进摘要 |
+| 排队/接管中学员发言：只记录，响应是单个 `handoff.status` 的 SSE，不返回 409 | AC-012 要求发言仍被老师看到，409 会丢消息；沿用 SSE 让前端同一套流处理。`HANDOFF_ACTIVE` 留给“恢复 Agent”这类只有机器人才做的操作。该事件不属于任何运行，runId 取被记录消息的 id |
+| 仲裁全部交给数据库：带条件的 UPDATE + 部分唯一索引 + `FOR SHARE` | 与 T-20 一致。`FOR SHARE` 让学员消息事务读到的 mode 在它提交之前不会被接管改掉，AC-012 在并发下也成立 |
+| claim 不幂等（同一老师再点也 409）；release 只有接管人（别人 403） | 接管是有归属的动作；“重复接管状态冲突”是验收条款 |
+| 会话 mode 与 handoff 状态在同一事务里一起变，不一致时抛错回滚 | 不留“handoff 已接管、会话还是 queued”的半成品 |
+| 学员侧接口不返回 `summary` | 最小暴露：摘要是写给老师的内部说明。联调前自查发现最初学员侧也带了它，先改再联调 |
+| 拆分 22a（数据与接口）→ 22b（Agent 侧）→ 22c（真实端到端与文档） | 与 T-20 一致，每片自带测试和反向验证 |
+
 ### 已知局限
 - 校验只覆盖契约自身一致性与样例；尚无从 openapi 生成 TS/Python 类型（T-06+ 引入时补），当前消费方需手工对照。
 - （已缓解，2026-09-26）education-api 串行后仍会偶发同一症状。**根因推断并验证**：`pool.end()` 只是发出关闭，服务端后端进程可能还没退出，此时 `DROP DATABASE … WITH (FORCE)` 向它们发终止信号，客户端收到 "terminating connection due to administrator command" 成为未捕获错误；用例开的并发连接越多越容易触发（新增 chat 相关用例后一度连续 3 次全量全失败、随后 10 次里 2 次失败）。**缓解**：所有测试文件的收尾统一改用 `src/testing/db.ts` 的 `dropTestDatabase`（先等该库连接退净，最多 2 秒，再 FORCE 删库）；缓解后全量连续 20 次全绿（缓解前同环境失败率约 20%，20 次全绿属偶然的概率约 1%）。以下为缓解前的原始记录：整套约 1/11、单独跑 `internalAuth.test.ts` 约 1/30，报错为该文件 `before` 钩子"generated asynchronous activity after the test ended … terminating connection due to administrator command"，失败文件自己的用例全部通过，发生在删临时库（`DROP DATABASE … WITH (FORCE)`）收尾时。判断为既有的清理期竞态，非 T-20 引入；未修，重试即过，若影响 CI 再统一给各测试文件加"等连接退净再删库"的收尾。（此前记录：）education-api 全量测试并行时约 1/3 概率出现不相关文件的 "terminating connection due to administrator command"（各测试文件各自建/删临时库，并行时互相干扰）。改为 `--test-concurrency=1` 串行后连续 8 次 0 失败，耗时 ~1s→~5s；根因未深究（怀疑 CREATE/DROP DATABASE 并行），但症状已消除。
@@ -376,4 +392,4 @@ L-00 独立练习在 T-04 后开始。
 ## 5. 用时与下次入口
 - 用时（M0，学员活跃时间，据会话时间戳估算）：约 9h，区间 7～11h。下限 7.2h 为间隔 ≤60 分钟的部分；第一晚 09-20 21:50→23:09（70 分钟）与 23:09→02:00（171 分钟）两段长空档无法确认是否在学习，故有上浮区间。无法拆分实现与学习用时（边做边讲）。M0 计划 14h（实现估时），本轮多数实现由 Claude 完成。排期不调整，M1 结束后用同样方法再校准。
 - M0 的 T-01～T-05 已完成。下次入口：M0 验收汇报与排期重估，之后等"继续"进入 M1。L-00 已独立通过（含较多提示），M3 前需无提示复现。
-- M2（T-12～T-17）已完成，实现验收见 §1；L-02 讲解已过、独立练习待做（见 §4）。M3 的 T-18（工具契约+可信 actor 注入+内部服务认证）已完成。学员在 T-18 开始时表示手写只有教学意义、Python 语法不熟，改为"我实现、逐段注释、讲清设计"；讲解中澄清了三点：工作证只回答"是谁"而不含操作对象（对象由工具参数给出、由业务 API 按 actor 授权）；固定的只是边界（身份/授权/副作用需确认），理解和消歧交给模型；框架管通用机制（循环、schema、并行、限次），身份注入与出口收口无论用不用框架都要自己做。T-19 已决定：自建 StateGraph + 自写内循环 + 自研 ToolRuntime + LangChain 仅作模型适配层（见 §3 T-19 设计决定）。下次入口：T-20（拆为 20a/20b/20c；20a-1 已完成，T-21 已完成；下一步 T-22（转人工：requestHandoff、队列、老师接管，AC-012）；仍需遵守 §3 T-19 的三条约定）。
+- M2（T-12～T-17）已完成，实现验收见 §1；L-02 讲解已过、独立练习待做（见 §4）。M3 的 T-18（工具契约+可信 actor 注入+内部服务认证）已完成。学员在 T-18 开始时表示手写只有教学意义、Python 语法不熟，改为"我实现、逐段注释、讲清设计"；讲解中澄清了三点：工作证只回答"是谁"而不含操作对象（对象由工具参数给出、由业务 API 按 actor 授权）；固定的只是边界（身份/授权/副作用需确认），理解和消歧交给模型；框架管通用机制（循环、schema、并行、限次），身份注入与出口收口无论用不用框架都要自己做。T-19 已决定：自建 StateGraph + 自写内循环 + 自研 ToolRuntime + LangChain 仅作模型适配层（见 §3 T-19 设计决定）。T-20、T-21、T-22 已完成。下次入口：T-23（老师会话工作台和学生排队状态：需补老师侧列表接口、前端“转人工”入口、`handoff.status`/`HANDOFF_ACTIVE` 的界面反馈，见 §1 T-22 限制④⑤）；仍需遵守 §3 T-19 的三条约定。

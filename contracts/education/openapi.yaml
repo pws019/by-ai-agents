@@ -672,11 +672,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, run, pendingConfirmation]
+                required: [items, run, pendingConfirmation, mode, handoff]
                 properties:
                   items:
                     type: array
                     items: {$ref: '#/components/schemas/Message'}
+                  mode:
+                    description: 会话此刻由谁应答。bot 机器人；queued 已请求人工、排队中；human 老师接管中；closed 已关闭。刷新页面后据此恢复"排队中 / 老师处理中"的界面。
+                    type: string
+                    enum: [bot, queued, human, closed]
+                  handoff:
+                    description: 进行中（排队或已接管）的接管记录；没有则为 null。已结束（released）的不在这里。
+                    type: object
+                    nullable: true
+                    allOf: [{$ref: '#/components/schemas/Handoff'}]
                   pendingConfirmation:
                     description: |
                       这个会话里待确认的申请草稿及其确认卡（形状同 application.confirmation 事件的载荷）；没有则为 null。
@@ -712,6 +721,12 @@ paths:
         原运行已失败则回放 run.error（要重试请换新的 clientMessageId），原运行仍在处理中返回 409 RUN_IN_PROGRESS。
         运行的生命周期不绑在这条连接上：连接断开后服务端仍会跑完并落库，之后用 GET messages 查询结果。
         Agent 不可达等"开流前"的失败返回普通错误响应（503），不是 SSE。
+
+        会话正在排队（queued）或由老师接管（human）时：消息只被记录（老师看得到），**不启动机器人**（AC-012），
+        响应仍是 SSE，但只有一个 handoff.status 事件（payload.mode 是此刻的会话状态）；该事件不属于任何 Agent 运行，
+        runId 取被记录消息的 id，仅用于客户端关联。同一个 clientMessageId 重试只记录一条；接管结束之后再重试一条
+        当时被记录的消息，也只返回"已记录"（handoff.status，mode 为 bot），不会补一次机器人回复。
+        会话已关闭（closed）返回 409 INVALID_STATE。
       parameters: [{$ref: '#/components/parameters/ConversationId'}]
       requestBody:
         required: true
@@ -733,7 +748,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409':
-          description: 同会话已有生成任务（RUN_IN_PROGRESS）或 human 接管中
+          description: 同会话已有生成任务（RUN_IN_PROGRESS），或会话已关闭（INVALID_STATE）
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -748,7 +763,8 @@ paths:
       description: |
         请求体为空。"确认"这件事本身已经由 POST /applications/{id}/confirm 完成，这个接口不携带、也不采信任何确认内容
         （不把"确认"文本当成授权）：Agent 恢复后会重新向业务 API 读取申请状态再回话。
-        没有可恢复的确认（从未产生确认卡，或已恢复过）返回 409 INVALID_STATE；会话正在生成返回 409 RUN_IN_PROGRESS。
+        没有可恢复的确认（从未产生确认卡，或已恢复过）返回 409 INVALID_STATE；会话正在生成返回 409 RUN_IN_PROGRESS；
+        会话正在排队或由老师接管返回 409 HANDOFF_ACTIVE（恢复会让机器人开口，接管期间不允许；学员在业务 API 上的确认本身不受影响）。
       parameters: [{$ref: '#/components/parameters/ConversationId'}]
       responses:
         '200':
@@ -765,6 +781,10 @@ paths:
     post:
       tags: [chat]
       operationId: requestHandoff
+      summary: 学员请求老师接管：会话 bot → queued
+      description: |
+        幂等：会话已经在排队或接管中，返回那条进行中的记录（不新建、不覆盖原因）。会话已关闭返回 409 INVALID_STATE。
+        Agent 认为该转人工时不直接调用这个接口（/conversations/* 对 Agent 通道关闭）：它通过事件流告诉 BFF，由 BFF 落库。
       parameters: [{$ref: '#/components/parameters/ConversationId'}]
       requestBody:
         content:
@@ -780,10 +800,16 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Handoff'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
   /teacher/handoffs/{handoffId}/claim:
     post:
       tags: [teacher]
       operationId: claimHandoff
+      summary: 老师接管排队中的记录：queued → claimed，会话 queued → human
+      description: |
+        接管不是幂等的：记录已被接管（含同一位老师再点一次）返回 409 INVALID_STATE；expectedRevision 过期返回 409 REVISION_CONFLICT。
+        两位老师同时接管同一条，恰好一个成功。
       parameters: [{$ref: '#/components/parameters/HandoffId'}]
       requestBody:
         required: true
@@ -797,11 +823,16 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Handoff'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
   /teacher/handoffs/{handoffId}/release:
     post:
       tags: [teacher]
       operationId: releaseHandoff
+      summary: 接管人结束接管：claimed → released，会话 human → bot
+      description: |
+        只有接管这条记录的老师能结束（别的老师 403）；记录不在 claimed 状态返回 409 INVALID_STATE；expectedRevision 过期返回 409 REVISION_CONFLICT。
       parameters: [{$ref: '#/components/parameters/HandoffId'}]
       requestBody:
         required: true
@@ -815,11 +846,17 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Handoff'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
   /teacher/conversations/{conversationId}/messages:
     post:
       tags: [teacher]
       operationId: teacherSendMessage
+      summary: 接管中的老师发消息
+      description: |
+        只有当前接管这个会话的老师能发：会话不在人工接管中返回 409 INVALID_STATE，被另一位老师接管返回 403。
+        同一个 clientMessageId 重试返回 200 和原消息（不再写第二条）；clientMessageId 已被另一种消息占用返回 422。
       parameters: [{$ref: '#/components/parameters/ConversationId'}]
       requestBody:
         required: true
@@ -832,13 +869,20 @@ paths:
                 clientMessageId: {type: string, minLength: 1, maxLength: 100}
                 text: {type: string, minLength: 1, maxLength: 4000}
       responses:
+        '200':
+          description: 重复的 clientMessageId，返回原消息
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Message'}
         '201':
           description: 已发送
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Message'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
 
 components:
   securitySchemes:
@@ -1199,7 +1243,13 @@ components:
         conversationId: {type: string, format: uuid}
         status: {type: string, enum: [queued, claimed, released]}
         teacherId: {type: string, format: uuid, nullable: true}
-        summary: {type: string, nullable: true}
+        summary:
+          type: string
+          nullable: true
+          description: |
+            交接摘要，写给老师看的内部说明：由 Agent 用确定性代码从已核验的工具结果和学员原话拼出，不含猜测。
+            **只在老师接口（claim / release）的响应里返回**；学员侧接口（POST handoff、GET messages）不含这个字段。
+            学员直接点"转人工"、没有 Agent 参与时为 null。
         reason: {type: string, nullable: true}
         revision: {type: integer}
 

@@ -5,6 +5,7 @@
 // 这样"断线后可查询完成消息"才成立（AC-021）。
 import { signInternalContext } from "../auth/internalContext.js";
 import type { Db } from "../db/pool.js";
+import { requestHandoff } from "../handoffs/handoffs.js";
 import type { AgentClient, AgentEvent } from "./agentClient.js";
 import { completeRun, failRun, heartbeat } from "./runs.js";
 
@@ -13,6 +14,14 @@ const FORWARDED_TYPES = new Set([
   "message.delta", "tool.status", "citation", "replay.card", "application.confirmation", "handoff.status", "message.completed", "run.error",
 ]);
 const RUN_ERROR_CODES = new Set(["DEPENDENCY_UNAVAILABLE", "BUDGET_EXCEEDED", "TOOL_FAILED", "INTERNAL"]);
+
+// Agent 交来的转人工原因/摘要只按字符串接受并截断：原因与契约里 POST /handoff 的 reason 同一上限。
+const HANDOFF_REASON_MAX = 500;
+const HANDOFF_SUMMARY_MAX = 4000;
+const clip = (value: unknown, max: number): string | null => {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return Array.from(value.trim()).slice(0, max).join(""); // 按字符而不是 UTF-16 单元截断，不会把一个字切成两半
+};
 
 // 工作证有效期要覆盖一次运行：Agent 在每次工具调用时都会检查它是否过期。运行超过它会以"登录过期"话术结束，而不是崩溃。
 export const RUN_CONTEXT_TTL_SECONDS = 120;
@@ -121,6 +130,19 @@ async function consume(
           forwardError("INTERNAL", "运行已超时，请重新发送。");
           return;
         }
+      }
+      if (event.type === "handoff.requested") {
+        // Agent 认为该转人工：会话是 BFF 的，由 BFF 落库（业务 API 对 Agent 通道关闭了 /conversations/*）。
+        // 原始事件带着交接摘要，绝不转发给浏览器；浏览器只会收到落库之后的 handoff.status。
+        // 会话归属取自这次运行本身（args.conversationId），不采信事件里的任何 id；文本字段只接受字符串并截断。
+        const result = await requestHandoff(deps.db, {
+          conversationId: args.conversationId,
+          reason: clip(event.payload?.reason, HANDOFF_REASON_MAX),
+          summary: clip(event.payload?.summary, HANDOFF_SUMMARY_MAX),
+        });
+        // 已经在排队/接管中是幂等的（existing）；会话已关闭则什么都不做，不向浏览器报状态。
+        if (result.kind !== "closed") forward({ type: "handoff.status", payload: { mode: result.handoff.status === "claimed" ? "human" : "queued" } });
+        continue;
       }
       if (!FORWARDED_TYPES.has(event.type)) continue;
 

@@ -1,14 +1,16 @@
 """学员服务图（外层）。固定流程，模型只在其中的特定环节发挥：
 
     load_authorized_context → route ─┬─ query        ─┐
-                                     └─ application  ─┴→ respond ─┬─ (无需确认) → END
-                                                                  └─ (有确认卡) → await_confirmation → verify_outcome → END
+                                     ├─ application  ─┼→ respond ─┬─ (无需确认) → END
+                                     └─ handoff      ─┘           └─ (有确认卡) → await_confirmation → verify_outcome → END
 
 - load_authorized_context：纯代码。重置本轮的临时字段，检查工作证是否有效。
 - route：让模型把用户意图归到有限的几类之一（模糊的分类，正是模型擅长的）。输出被限定在白名单里，认不出就走 query。
   分类的目的不只是"分流"，更是**最小权限**：query 分支根本拿不到 prepareApplication，
   即使学员在对话里诱导模型起草申请，它在这个分支里也调用不到。
 - query / application：各自运行一个内层 ReAct 循环（loop.py），只暴露本分支的工具子集。
+- handoff：纯代码。学员明确要转人工：拼交接摘要（handoff.py，确定性、不含模型的话）、发 handoff.requested 事件，
+  由 BFF 落库并让会话进入排队。这个分支没有工具、不再调用模型——转人工之后机器人本来就该闭嘴。
 - respond：纯代码。需要固定话术的情形（确认卡、预算耗尽、登录过期）由代码给出，不让模型即兴发挥。
 - await_confirmation：只做一件事——interrupt，把"话术 + 确认卡"交给调用方，然后停在这里，等学员在界面上确认。
   恢复时本节点会从头重跑，所以 interrupt 之前不做任何有副作用的事。
@@ -38,18 +40,20 @@ from ..model.base import ChatModel, Message
 from ..tools.context import RunContext
 from ..tools.runtime import ToolRuntime
 from ..tools.spec import RunBudget
+from .handoff import REASON_STUDENT_REQUEST, build_handoff_summary
 from .loop import run_tool_loop
 
 QUERY_TOOLS = {"getCurrentOffering", "getMyEnrollment", "getMySchedule", "getMyProgress", "getTransferTargets", "getApplicationStatus"}
 APPLICATION_TOOLS = {"getMyEnrollment", "getTransferTargets", "prepareApplication", "getApplicationStatus"}
 
-BRANCHES = ("query", "application")
+BRANCHES = ("query", "application", "handoff")
 DEFAULT_BRANCH = "query"
 
 ROUTE_PROMPT = (
     "你是学员服务的意图分类器。根据对话判断学员最新一条消息的意图，只输出下面其中一个词，不要输出别的：\n"
     "query：查询课程、课表、进度、已有申请的状态等信息\n"
-    "application：想申请转班或退费"
+    "application：想申请转班或退费\n"
+    "handoff：明确要求转人工、找老师或真人客服处理"
 )
 QUERY_PROMPT = "你是学员服务助手。只使用提供的工具查询信息并如实回答；工具没有给出的信息不要编造。"
 APPLICATION_PROMPT = (
@@ -61,6 +65,7 @@ REPLY_NEEDS_CONFIRMATION = "我已为你起草好申请草稿。它还没有提�
 REPLY_BUDGET_EXHAUSTED = "这个问题需要的查询步骤太多，我先停在这里。请把问题说得更具体一些再试一次。"
 REPLY_AUTH_EXPIRED = "登录状态已过期，请重新发送一次消息。"
 REPLY_EMPTY = "抱歉，我没能给出有效的回答，请换个说法再试一次。"
+REPLY_HANDOFF = "好的，我已经帮你转接老师。老师接手之前你可以继续留言，老师会看到；这段时间我不会再自动回复。"
 REPLY_STILL_DRAFT = "我还没有看到你的确认，申请目前仍是草稿，没有提交。你可以随时在界面上核对并确认。"
 REPLY_DRAFT_CHANGED = "这份草稿的内容在起草之后有更新，之前那张确认卡已经不适用了。请在界面上核对最新内容后再确认。"
 REPLY_APPLICATION_NOT_FOUND = "我没能找到这份申请，请到\u201c我的申请\u201d里查看。"
@@ -126,6 +131,18 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
             }
         return node
 
+    async def handoff(state: GraphState) -> GraphState:
+        # 纯代码，不调用模型：学员明确要转人工时，把"请求 + 交接摘要"通过事件流交给 BFF，由 BFF 落库并让会话进入排队。
+        # Agent 不直接改会话状态（会话是 BFF 的，业务 API 对 Agent 通道关闭了 /conversations/*）。
+        # 摘要只用工具的成功返回和学员的原话拼成（见 handoff.py），不含模型说过的话。
+        # 恢复/重跑时这个事件可能再发一次：BFF 一侧对"已在排队/接管中"是幂等的。
+        get_stream_writer()({
+            "type": "handoff.requested",
+            "reason": REASON_STUDENT_REQUEST,
+            "summary": build_handoff_summary(state["messages"], REASON_STUDENT_REQUEST),
+        })
+        return {"stop_reason": "handoff_requested"}
+
     async def respond(state: GraphState) -> GraphState:
         stop, reply = state["stop_reason"], state["reply"]
         if stop == "answered" and reply.strip():
@@ -134,6 +151,7 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
             "needs_confirmation": REPLY_NEEDS_CONFIRMATION,
             "budget_exhausted": REPLY_BUDGET_EXHAUSTED,
             "auth_expired": REPLY_AUTH_EXPIRED,
+            "handoff_requested": REPLY_HANDOFF,
         }.get(stop, REPLY_EMPTY)
         return {"reply": text, "messages": [{"role": "assistant", "content": text}]}
 
@@ -167,6 +185,7 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
     g.add_node("route", route)
     g.add_node("query", branch_node(query_tools, QUERY_PROMPT))
     g.add_node("application", branch_node(application_tools, APPLICATION_PROMPT))
+    g.add_node("handoff", handoff)
     g.add_node("respond", respond)
     g.add_node("await_confirmation", await_confirmation)
     g.add_node("verify_outcome", verify_outcome)
@@ -176,6 +195,7 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
     g.add_conditional_edges("route", lambda s: s["branch"], list(BRANCHES))
     g.add_edge("query", "respond")
     g.add_edge("application", "respond")
+    g.add_edge("handoff", "respond")
     g.add_conditional_edges("respond", after_respond, ["await_confirmation", END])
     g.add_edge("await_confirmation", "verify_outcome")
     g.add_edge("verify_outcome", END)
