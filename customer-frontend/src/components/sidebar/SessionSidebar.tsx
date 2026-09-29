@@ -59,7 +59,9 @@ export function SessionSidebar() {
 
       {inChat && (
         <>
-          <div className="px-4 mt-6 mb-4">
+          <div className="mt-4 mx-4 border-t border-outline-variant" />
+
+          <div className="px-4 mt-4 mb-4">
             <Link
               to="/"
               className="w-full bg-primary text-on-primary py-3 px-4 rounded-xl text-label-md flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all"
