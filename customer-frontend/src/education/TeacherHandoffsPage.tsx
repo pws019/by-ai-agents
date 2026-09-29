@@ -21,6 +21,8 @@ export function TeacherHandoffsPage() {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  // 查询与发送共享编号：新请求、切换会话或卸载后，旧响应不再有权修改消息区。
+  const messageRequest = useRef(0);
 
   const selected = handoffs?.find((h) => h.id === selectedId) ?? null;
   // 只有"当前是我接管的"才能看消息、发消息——排队中的、被别的老师接管的，后端也会拒绝（这里提前不显示，减少无意义的失败请求）。
@@ -30,12 +32,6 @@ export function TeacherHandoffsPage() {
     return listTeacherHandoffs()
       .then(({ items }) => setHandoffs(items))
       .catch(() => setError("加载队列失败"));
-  }
-
-  function loadMessages(conversationId: string) {
-    return getTeacherConversationMessages(conversationId)
-      .then(({ items }) => setMessages(items))
-      .catch(() => setError("加载消息失败"));
   }
 
   useEffect(() => {
@@ -48,17 +44,31 @@ export function TeacherHandoffsPage() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    setMessages(null);
     if (!selected || !mine) {
-      setMessages(null);
       return;
     }
     const conversationId = selected.conversationId;
-    void loadMessages(conversationId);
+    async function loadMessages() {
+      const requestId = ++messageRequest.current;
+      try {
+        const { items } = await getTeacherConversationMessages(conversationId);
+        if (active && requestId === messageRequest.current) setMessages(items);
+      } catch {
+        if (active && requestId === messageRequest.current) setError("加载消息失败");
+      }
+    }
+    void loadMessages();
     // 接管期间学员随时可能再发言：这条连接不是持续打开的 SSE，看不到"学员又发了一句"，只能定期自己去查。
     const timer = setInterval(() => {
-      if (!busyRef.current) void loadMessages(conversationId);
+      if (!busyRef.current) void loadMessages();
     }, MESSAGES_POLL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      active = false;
+      messageRequest.current++;
+      clearInterval(timer);
+    };
     // selected 对象本身在每次 refreshQueue 后都会是新引用，这里用 conversationId 判断是否要重新加载，避免刷新队列时闪一下空白。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.conversationId, mine]);
@@ -83,15 +93,18 @@ export function TeacherHandoffsPage() {
 
   async function send() {
     const text = reply.trim();
-    if (!selected || !text) return;
+    if (!selected || !mine || !text || busyRef.current) return;
+    const requestId = ++messageRequest.current;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
       const sent = await teacherSendChatMessage(selected.conversationId, { clientMessageId: crypto.randomUUID(), text });
+      if (requestId !== messageRequest.current) return;
       setMessages((prev) => [...(prev ?? []), sent]);
       setReply("");
     } catch (err) {
-      setError(err instanceof ApiError ? `发送失败（${err.code}）` : "发送失败，请检查网络后重试。");
+      if (requestId === messageRequest.current) setError(err instanceof ApiError ? `发送失败（${err.code}）` : "发送失败，请检查网络后重试。");
     } finally {
       setBusy(false);
     }

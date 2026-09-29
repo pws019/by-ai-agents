@@ -360,6 +360,8 @@ education-api 全量 144 passed。
 | 拆分 22a（数据与接口）→ 22b（Agent 侧）→ 22c（真实端到端与文档） | 与 T-20 一致，每片自带测试和反向验证 |
 
 ### 已知局限
+
+- T-23 复盘修正（2026-09-29）：`TeacherHandoffsPage.tsx` 消息 effect 增加清理标志与共享请求编号，切换会话/卸载、同会话响应乱序、发送期间旧查询返回时禁止旧结果回写；切换会话先清空旧消息，发送响应也校验编号。比较取消 fetch 与忽略过期响应后采用后者，避免仅为此改动扩展通用 API 封装。验证：前端 53 tests passed、`npm run build --workspace=customer-frontend` 通过；临时 Node 脚本以受控 Promise 执行实际组件的消息 effect，验证切换会话、乱序响应、清理后旧错误三个场景。脚本使用模拟 hooks，未做真实浏览器验证。
 - 校验只覆盖契约自身一致性与样例；尚无从 openapi 生成 TS/Python 类型（T-06+ 引入时补），当前消费方需手工对照。
 - （已缓解，2026-09-26）education-api 串行后仍会偶发同一症状。**根因推断并验证**：`pool.end()` 只是发出关闭，服务端后端进程可能还没退出，此时 `DROP DATABASE … WITH (FORCE)` 向它们发终止信号，客户端收到 "terminating connection due to administrator command" 成为未捕获错误；用例开的并发连接越多越容易触发（新增 chat 相关用例后一度连续 3 次全量全失败、随后 10 次里 2 次失败）。**缓解**：所有测试文件的收尾统一改用 `src/testing/db.ts` 的 `dropTestDatabase`（先等该库连接退净，最多 2 秒，再 FORCE 删库）；缓解后全量连续 20 次全绿（缓解前同环境失败率约 20%，20 次全绿属偶然的概率约 1%）。以下为缓解前的原始记录：整套约 1/11、单独跑 `internalAuth.test.ts` 约 1/30，报错为该文件 `before` 钩子"generated asynchronous activity after the test ended … terminating connection due to administrator command"，失败文件自己的用例全部通过，发生在删临时库（`DROP DATABASE … WITH (FORCE)`）收尾时。判断为既有的清理期竞态，非 T-20 引入；未修，重试即过，若影响 CI 再统一给各测试文件加"等连接退净再删库"的收尾。（此前记录：）education-api 全量测试并行时约 1/3 概率出现不相关文件的 "terminating connection due to administrator command"（各测试文件各自建/删临时库，并行时互相干扰）。改为 `--test-concurrency=1` 串行后连续 8 次 0 失败，耗时 ~1s→~5s；根因未深究（怀疑 CREATE/DROP DATABASE 并行），但症状已消除。
 - mock/real 目前只有 `.env.example` 中的 `EDUCATION_MODE` 占位，尚无代码消费。
