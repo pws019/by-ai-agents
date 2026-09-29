@@ -274,10 +274,11 @@ function HandoffGroup({
 
 const ROLE_LABEL: Record<ConversationMessage["role"], string> = { user: "学员", assistant: "机器人", teacher: "我", system: "系统" };
 
-// 精简版的消息气泡，专给老师工作台用：跟学员端 MessageBubble 是同一套视觉语言（学员靠右蓝色、
-// 老师和机器人靠左但图标/配色不同），但这里不需要工具状态、流式占位那些聊天专属的复杂度。
+// 精简版的消息气泡，专给老师工作台用。对齐方向看的是"这个屏幕的主人是谁"，不是固定角色——
+// 学员端 MessageBubble 里 user 靠右，是因为那个页面的主人是学员；这里的主人是老师，
+// 所以靠右的是 teacher 自己，学员和机器人都是"对方"，一律靠左，只用图标/配色区分是谁。
 function TeacherViewBubble({ message }: { message: ConversationMessage }) {
-  if (message.role === "user") {
+  if (message.role === "teacher") {
     return (
       <div className="flex justify-end">
         <div className="max-w-[75%] bg-primary text-on-primary px-3.5 py-2 rounded-t-xl rounded-bl-xl whitespace-pre-wrap break-words">
@@ -286,22 +287,22 @@ function TeacherViewBubble({ message }: { message: ConversationMessage }) {
       </div>
     );
   }
-  const isTeacher = message.role === "teacher";
+  const isStudent = message.role === "user";
   return (
     <div className="flex justify-start">
       <div className="flex gap-2.5 max-w-[75%]">
         <div
           className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-            isTeacher ? "bg-secondary-container" : "bg-surface-container-highest"
+            isStudent ? "bg-secondary-container" : "bg-surface-container-highest"
           }`}
         >
-          <Icon name={isTeacher ? "support_agent" : "smart_toy"} filled className={`text-[15px] ${isTeacher ? "text-on-secondary-container" : "text-primary"}`} />
+          <Icon name={isStudent ? "person" : "smart_toy"} filled className={`text-[15px] ${isStudent ? "text-on-secondary-container" : "text-primary"}`} />
         </div>
         <div className="flex flex-col gap-0.5 min-w-0">
           <span className="text-label-sm text-on-surface-variant">{ROLE_LABEL[message.role]}</span>
           <div
             className={`px-3.5 py-2 rounded-t-xl rounded-br-xl border whitespace-pre-wrap break-words ${
-              isTeacher ? "bg-secondary-container/20 border-secondary-container" : "bg-surface-container-low border-surface-container"
+              isStudent ? "bg-secondary-container/20 border-secondary-container" : "bg-surface-container-low border-surface-container"
             }`}
           >
             <p className="text-body-sm text-on-surface">{message.content}</p>
