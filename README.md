@@ -1,5 +1,13 @@
 # by-ai-agents
 
+当前默认开发入口是教育学员服务 Agent。先运行 `npm run setup:education`，然后用
+`npm run dev` 启动数据服务、education-api（8400）和 education-agent（8500）。
+首次启动会创建本地 `infra/education/.env`，并生成内部服务密钥；文件已被 Git 忽略。
+若 8400/8500 已被先前启动的服务占用，请先停止那个开发进程。此仓库使用 npm workspace，
+`pnpm dev` 不受支持。旧电商 Demo 使用 `npm run dev:legacy`。
+
+下面保留旧电商 Demo 的说明。
+
 电商智能客服 Demo：Qwen3-8B QLoRA 微调 + Mastra Agent + Qwen3 embedding RAG +
 mock 订单/物流接口，用 [Turborepo](https://turborepo.com/) 管理运行时子项目。
 
