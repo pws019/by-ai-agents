@@ -30,6 +30,7 @@ import operator
 from dataclasses import dataclass
 from typing import Annotated, TypedDict
 
+from langchain_core.messages import convert_to_messages, trim_messages
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
@@ -48,6 +49,10 @@ APPLICATION_TOOLS = {"getMyEnrollment", "getTransferTargets", "prepareApplicatio
 
 BRANCHES = ("query", "application", "handoff")
 DEFAULT_BRANCH = "query"
+
+# 只保留能塞进这个近似 token 预算的最近一段历史，避免对话变长后每轮都把全部历史重新发给模型
+# （progress.md 已知局限第 1 层：token 开销随轮数近似平方级增长，且长历史会稀释路由/工具循环的判断质量）。
+HISTORY_TOKEN_BUDGET = 4000
 
 ROUTE_PROMPT = (
     "你是学员服务的意图分类器。根据对话判断学员最新一条消息的意图，只输出下面其中一个词，不要输出别的：\n"
@@ -113,16 +118,18 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
 
     async def route(state: GraphState) -> GraphState:
         # 只把"文字往来"给分类模型：历史里的工具调用/结果对分类没有帮助，还要求接口在没有 tools 的情况下接受 tool 消息。
-        reply = await model.chat([_system(ROUTE_PROMPT), *_text_turns(state["messages"])], [])
+        history = _trim_to_budget(_text_turns(state["messages"]), HISTORY_TOKEN_BUDGET)
+        reply = await model.chat([_system(ROUTE_PROMPT), *history], [])
         label = reply.text.strip().lower()
         return {"branch": label if label in BRANCHES else DEFAULT_BRANCH}
 
     def branch_node(branch_tools: ToolRuntime, prompt: str):
         async def node(state: GraphState, runtime: Runtime[RunScope]) -> GraphState:
             # system 提示每次现拼，不存进历史：它是代码里的常量，存了只会随历史膨胀，也会让改提示词无法生效。
+            history = _trim_to_budget(state["messages"], HISTORY_TOKEN_BUDGET)
             result = await run_tool_loop(
                 model=model, tools=branch_tools, ctx=runtime.context.ctx, budget=runtime.context.budget,
-                messages=[_system(prompt), *state["messages"]],
+                messages=[_system(prompt), *history],
                 emit=get_stream_writer(),  # 自定义流通道：调用方用 stream_mode="custom" 才会收到；用 ainvoke 时相当于空操作
             )
             return {
@@ -208,6 +215,24 @@ def _system(text: str) -> Message:
 
 def _text_turns(messages: list[Message]) -> list[Message]:
     return [m for m in messages if m["role"] in ("user", "assistant") and m["content"] and not m.get("tool_calls")]
+
+
+def _trim_to_budget(messages: list[Message], max_tokens: int) -> list[Message]:
+    """只保留能塞进近似 token 预算的最近一段历史；预算内则原样返回。
+
+    转成 LangChain 消息只是为了复用 trim_messages 的裁剪算法——`start_on="human"` 保证裁剪结果
+    要么以一次完整的用户发问开头，要么干脆整段丢弃，绝不会把某一轮的工具调用和它的结果拆散
+    （模型接口不接受"工具调用有去无回"的历史）。真正返回的仍是原始字典，不改变持久化的
+    Message 格式（见 model/base.py 的设计说明），也不修改传入的 state——只影响这次发给模型的输入。
+    """
+    if not messages:
+        return messages
+    trimmed = trim_messages(
+        convert_to_messages(messages), strategy="last", token_counter="approximate",
+        max_tokens=max_tokens, start_on="human",
+    )
+    kept = len(trimmed)
+    return messages[len(messages) - kept :]
 
 
 def _outcome_text(ok: bool, error_code: str | None, data: dict | None, drafted_revision: int) -> str:

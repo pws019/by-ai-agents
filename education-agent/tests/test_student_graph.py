@@ -220,6 +220,46 @@ def _expiring_after_authorize() -> RunContext:
     return Flaky("student-1", "student", "req-1", int(time.time() + 60), TOKEN)
 
 
+# ---- 历史裁剪（progress.md 已知局限第 1 层）------------------------------------------------
+
+async def test_old_turns_are_trimmed_once_history_exceeds_the_token_budget(monkeypatch):
+    import education_agent.graphs.student_graph as sg
+    monkeypatch.setattr(sg, "HISTORY_TOKEN_BUDGET", 20)  # 真实预算够大不会在测试里触发；调小才能在几轮内看到裁剪
+
+    h = Harness([
+        route("query"), ModelReply(text="ok1"),
+        route("query"), ModelReply(text="ok2"),
+        route("query"), ModelReply(text="ok3"),
+    ], checkpointer=InMemorySaver())
+    await h.say("第一轮：这是一段刻意写长一点的问题内容，用来撑满很小的裁剪预算")
+    await h.say("第二轮问题")
+    await h.say("第三轮问题")
+
+    last_route_msgs, _ = h.model.calls[-2]  # 倒数第二次调用是第三轮的 route 分类
+    assert not any("第一轮" in m["content"] for m in last_route_msgs), "太旧的轮次应该已经被裁掉，不再发给模型"
+    assert any("第三轮" in m["content"] for m in last_route_msgs), "最近的轮次必须留下"
+
+    # 裁剪只影响"发给模型看的"输入，checkpoint 里持久化的历史必须保持完整（见 model/base.py 的设计说明）。
+    snap = await h.snapshot()
+    assert any("第一轮" in m["content"] for m in snap.values["messages"] if m["role"] == "user")
+
+
+async def test_trimming_never_splits_a_tool_call_from_its_result(monkeypatch):
+    import education_agent.graphs.student_graph as sg
+    monkeypatch.setattr(sg, "HISTORY_TOKEN_BUDGET", 20)
+
+    h = Harness([
+        route("query"), ModelReply(tool_calls=(call("getMyEnrollment", {}),)), ModelReply(text="第一轮答案"),
+        route("query"), ModelReply(text="第二轮答案"),
+    ], checkpointer=InMemorySaver())
+    await h.say("查一下我的报名，附带一段凑字数的问题内容")
+    out = await h.say("第二轮问题")
+
+    branch_msgs, _ = h.model.calls[-1]  # 第二轮 application/query 分支节点发给模型的输入
+    assert_every_tool_call_has_a_tool_message(branch_msgs)
+    assert out["reply"] == "第二轮答案"
+
+
 # ---- 状态与持久化 -------------------------------------------------------------------------
 
 async def test_second_turn_sees_previous_history_and_resets_per_turn_fields():
