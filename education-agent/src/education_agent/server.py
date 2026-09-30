@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, model_validator
 
+from .checkpoint_cleanup import prune_thread_checkpoints
 from .graphs.student_graph import RunScope
 from .tools.context import verify_context
 from .tools.spec import RunBudget
@@ -53,7 +54,11 @@ def _error(status: int, code: str) -> JSONResponse:
     return JSONResponse({"error": {"code": code}}, status_code=status)
 
 
-def create_app(graph, secret: str) -> FastAPI:
+def create_app(graph, secret: str, checkpoint_dsn: str | None = None) -> FastAPI:
+    """checkpoint_dsn：给了才会在每次运行后清理这个线程的旧 checkpoint（见 checkpoint_cleanup.py，
+    已知局限第 2 层）。测试用的 InMemorySaver 没有这张表可清，留空即可——是否清理由调用方显式决定，
+    不去反射 graph.checkpointer 的具体类型。
+    """
     app = FastAPI(title="education-agent")
 
     @app.post("/internal/runs")
@@ -70,7 +75,7 @@ def create_app(graph, secret: str) -> FastAPI:
             return _error(409, "NOT_AWAITING_CONFIRMATION")
 
         graph_input: Any = Command(resume=True) if body.resume else {"messages": [{"role": "user", "content": body.text}]}
-        events = _stream_run(graph, graph_input, config, RunScope(ctx, RunBudget()), str(body.conversationId), ctx.request_id)
+        events = _stream_run(graph, graph_input, config, RunScope(ctx, RunBudget()), str(body.conversationId), ctx.request_id, checkpoint_dsn)
         return StreamingResponse(
             events, media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -79,7 +84,9 @@ def create_app(graph, secret: str) -> FastAPI:
     return app
 
 
-async def _stream_run(graph, graph_input, config, scope: RunScope, conversation_id: str, run_id: str) -> AsyncIterator[str]:
+async def _stream_run(
+    graph, graph_input, config, scope: RunScope, conversation_id: str, run_id: str, checkpoint_dsn: str | None = None
+) -> AsyncIterator[str]:
     seq = 0
 
     def frame(type_: str, payload: dict) -> str:
@@ -102,3 +109,11 @@ async def _stream_run(graph, graph_input, config, scope: RunScope, conversation_
         # 只把固定的错误码给调用方；细节（可能含内部地址、凭证）只进服务端日志，用 runId 关联。
         log.exception("run failed runId=%s", run_id)
         yield frame("run.error", {"code": "INTERNAL", "message": RUN_ERROR_MESSAGE})
+    finally:
+        # 只保留能恢复所需的最新一条 checkpoint（见 checkpoint_cleanup.py）；失败只记日志，
+        # 绝不能让清理这件运维层面的事影响已经成功/已经上报过的这次响应。
+        if checkpoint_dsn is not None:
+            try:
+                await prune_thread_checkpoints(checkpoint_dsn, config["configurable"]["thread_id"])
+            except Exception:
+                log.exception("checkpoint prune failed runId=%s", run_id)

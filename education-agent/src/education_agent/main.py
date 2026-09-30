@@ -14,6 +14,7 @@ import httpx
 import uvicorn
 
 from .checkpoint import open_checkpointer
+from .config import DATABASE_URL
 from .dev_model import DemoModel
 from .graphs.student_graph import build_student_graph
 from .model.base import ChatModel
@@ -76,7 +77,10 @@ def build_model(settings: Settings) -> ChatModel:
 async def serve(settings: Settings) -> None:
     async with httpx.AsyncClient(base_url=settings.business_api_url) as http, open_checkpointer() as saver:
         graph = build_student_graph(build_model(settings), ToolRuntime(TOOL_SPECS, http), saver)
-        config = uvicorn.Config(create_app(graph, settings.internal_secret), host=settings.host, port=settings.port, log_level="info")
+        config = uvicorn.Config(
+            create_app(graph, settings.internal_secret, checkpoint_dsn=DATABASE_URL),
+            host=settings.host, port=settings.port, log_level="info",
+        )
         await uvicorn.Server(config).serve()
 
 
