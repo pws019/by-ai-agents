@@ -165,6 +165,56 @@ async def test_stream_never_contains_the_token():
     assert tok not in r.text and tok.split(".")[0] not in r.text
 
 
+# ---- 删除线程（progress.md 已知局限第 6 层）------------------------------------------------
+
+async def test_delete_thread_requires_a_valid_token():
+    c = make([])
+    r = await c.http.delete(f"/internal/threads/{CONVERSATION}")
+    assert r.status_code == 401
+    r = await c.http.delete(f"/internal/threads/{CONVERSATION}", headers={"X-Actor-Context": "garbage"})
+    assert r.status_code == 401
+
+
+async def test_delete_thread_removes_the_state_and_is_idempotent():
+    c = make([route("query"), ModelReply(text="ok")])
+    tok = token()
+    await c.run({"text": "你好"}, tok)
+    config = {"configurable": {"thread_id": f"student-1:{CONVERSATION}"}}
+    assert (await c.h.graph.aget_state(config)).values, "对照：删除前确实有状态"
+
+    r = await c.http.delete(f"/internal/threads/{CONVERSATION}", headers={"X-Actor-Context": tok})
+    assert r.status_code == 204
+    assert (await c.h.graph.aget_state(config)).values == {}
+
+    # 线程本来就不存在（或已经删过一次）也应该照样成功，不泄露"这个线程存不存在"。
+    r = await c.http.delete(f"/internal/threads/{CONVERSATION}", headers={"X-Actor-Context": tok})
+    assert r.status_code == 204
+
+
+async def test_delete_thread_only_touches_the_callers_own_thread():
+    c = make([route("query"), ModelReply(text="ok"), route("query"), ModelReply(text="ok2")])
+    await c.run({"text": "student-1 的话"}, token("student-1"))
+    await c.run({"text": "student-2 的话"}, token("student-2"))
+
+    await c.http.delete(f"/internal/threads/{CONVERSATION}", headers={"X-Actor-Context": token("student-1")})
+
+    config_1 = {"configurable": {"thread_id": f"student-1:{CONVERSATION}"}}
+    config_2 = {"configurable": {"thread_id": f"student-2:{CONVERSATION}"}}
+    assert (await c.h.graph.aget_state(config_1)).values == {}
+    assert (await c.h.graph.aget_state(config_2)).values, "另一个 actor 的线程不该被动到"
+
+
+async def test_delete_thread_failure_maps_to_dependency_unavailable(monkeypatch):
+    c = make([])
+
+    async def boom(_thread_id):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(c.h.graph.checkpointer, "adelete_thread", boom)
+    r = await c.http.delete(f"/internal/threads/{CONVERSATION}", headers={"X-Actor-Context": token()})
+    assert r.status_code == 503 and r.json()["error"]["code"] == "DEPENDENCY_UNAVAILABLE"
+
+
 # ---- 与契约一致 ---------------------------------------------------------------------------
 
 CONTRACT = Path(__file__).resolve().parents[2] / "contracts" / "education" / "events.schema.json"

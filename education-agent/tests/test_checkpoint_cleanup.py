@@ -121,3 +121,25 @@ async def test_prune_failure_is_logged_but_does_not_break_an_already_completed_s
         r = await http.post("/internal/runs", json={"conversationId": conversation, "text": "你好"}, headers={"X-Actor-Context": token()})
         assert r.status_code == 200 and "message.completed" in r.text, "清理失败不能影响本次已经成功的响应"
         assert "checkpoint prune failed" in caplog.text
+
+
+async def test_delete_thread_wipes_all_three_real_postgres_tables():
+    # progress.md 已知局限第 6 层：验证 DELETE /internal/threads/{id} 在真实 AsyncPostgresSaver
+    # 上确实把 checkpoints/checkpoint_blobs/checkpoint_writes 三张表清空，不是只删了目录那一张。
+    conversation = str(uuid.UUID(int=102))
+    thread_id = f"student-1:{conversation}"
+    async with open_checkpointer() as saver:
+        h = Harness([route("query"), ModelReply(text="ok")], checkpointer=saver)
+        app = create_app(h.graph, SECRET)
+        http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://agent.test")
+        tok = token()
+
+        await http.post("/internal/runs", json={"conversationId": conversation, "text": "你好"}, headers={"X-Actor-Context": tok})
+        before = await _table_counts(thread_id)
+        assert before["checkpoints"] > 0, "对照：确实留下过 checkpoint"
+
+        r = await http.delete(f"/internal/threads/{conversation}", headers={"X-Actor-Context": tok})
+        assert r.status_code == 204
+
+        after = await _table_counts(thread_id)
+        assert after == {"checkpoints": 0, "checkpoint_blobs": 0, "checkpoint_writes": 0}

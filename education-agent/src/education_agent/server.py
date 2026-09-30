@@ -12,6 +12,12 @@ run.error 之后不会再有事件。
 与契约唯一的差别：契约要求 message.completed 带 messageId，但助手消息是 BFF 落库后才有 id，所以 Agent 这一跳只带 text，
 由 BFF 落库后补上 messageId 再转发给浏览器。
 
+DELETE /internal/threads/{conversationId}：删除这个线程的全部 checkpoint（已知局限第 6 层：数据保留/合规，
+比如监护人要求删除某学员的对话记录）。同样只认 X-Actor-Context，thread id 按 actor 派生，调用方无法删别人的线程。
+这只是"能删"这个能力本身；由谁在什么时机决定要删（学员自己在界面操作、还是运营处理合规请求），
+以及 BFF 自己的 messages 表要不要一并删除，是 BFF/产品侧的决定，不在这个接口的职责内——
+本仓库目前没有任何调用方，留给以后接入。删除是幂等的：线程本来就不存在也返回成功，不泄露"这个线程存不存在"。
+
 身份与线程（T-19 的约定在这里落地）：
 - 身份只来自验过签的工作证，请求体里没有任何"我是谁"的字段。
 - 线程 id 是 "{actorId}:{conversationId}"，由工作证派生，调用方无法指定别人的线程。
@@ -23,7 +29,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, model_validator
@@ -80,6 +86,20 @@ def create_app(graph, secret: str, checkpoint_dsn: str | None = None) -> FastAPI
             events, media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.delete("/internal/threads/{conversation_id}")
+    async def delete_thread(conversation_id: UUID, x_actor_context: str | None = Header(default=None)):
+        ctx = verify_context(x_actor_context or "", secret)
+        if ctx is None:
+            return _error(401, "UNAUTHENTICATED")
+
+        thread_id = f"{ctx.actor_id}:{conversation_id}"
+        try:
+            await graph.checkpointer.adelete_thread(thread_id)
+        except Exception:
+            log.exception("delete thread failed thread_id=%s", thread_id)
+            return _error(503, "DEPENDENCY_UNAVAILABLE")
+        return Response(status_code=204)
 
     return app
 
