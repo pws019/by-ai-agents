@@ -300,6 +300,42 @@ describe("会话接口", () => {
     assert.equal(body.run.status, "completed");
   });
 
+  test("带 after 只返回它之后的新消息，供轮询用；没有新消息时是空数组", async () => {
+    const conversationId = await newConversation();
+    const r = await startMessageRun(db, { conversationId, clientMessageId: "1", text: "你好" });
+    if (r.kind !== "started") return assert.fail();
+    await completeRun(db, r.runId, "你好呀");
+    const first = (await (await call("GET", `/conversations/${conversationId}/messages`, studentCookie)).json()).items;
+    assert.equal(first.length, 2);
+
+    const noNew = await (await call("GET", `/conversations/${conversationId}/messages?after=${first[1].id}`, studentCookie)).json();
+    assert.deepEqual(noNew.items, []);
+
+    const r2 = await startMessageRun(db, { conversationId, clientMessageId: "2", text: "还在吗" });
+    if (r2.kind !== "started") return assert.fail();
+    await completeRun(db, r2.runId, "在的");
+
+    const incremental = await (await call("GET", `/conversations/${conversationId}/messages?after=${first[1].id}`, studentCookie)).json();
+    assert.deepEqual(incremental.items.map((m: { role: string; content: string }) => [m.role, m.content]), [["user", "还在吗"], ["assistant", "在的"]]);
+  });
+
+  test("after 指向的消息不存在，或属于别的会话：退化成快照，不报错", async () => {
+    const conversationId = await newConversation();
+    const other = await newConversation(otherStudentId);
+    const r = await startMessageRun(db, { conversationId, clientMessageId: "1", text: "你好" });
+    if (r.kind !== "started") return assert.fail();
+    await completeRun(db, r.runId, "你好呀");
+    const otherRun = await startMessageRun(db, { conversationId: other, clientMessageId: "1", text: "别的会话" });
+    if (otherRun.kind !== "started") return assert.fail();
+    const otherMsg = (await (await call("GET", `/conversations/${other}/messages`, otherCookie)).json()).items[0].id;
+
+    const bogus = await (await call("GET", `/conversations/${conversationId}/messages?after=00000000-0000-0000-0000-00000000dead`, studentCookie)).json();
+    assert.equal(bogus.items.length, 2);
+
+    const cross = await (await call("GET", `/conversations/${conversationId}/messages?after=${otherMsg}`, studentCookie)).json();
+    assert.equal(cross.items.length, 2, "别的会话的消息 id 查不到，退化成快照，不会误当成这个会话里更早的消息");
+  });
+
   test("读取消息时过期租约被回收：断线后重连看到的是失败，不是永远生成中", async () => {
     const conversationId = await newConversation();
     const r = await startMessageRun(db, { conversationId, clientMessageId: "1", text: "你好" });

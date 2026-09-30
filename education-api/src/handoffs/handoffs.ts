@@ -179,17 +179,48 @@ export async function listActiveHandoffs(db: Pick<Db, "select">): Promise<Handof
 
 export type ConversationMessage = { id: string; role: string; content: string; runId: string | null; createdAt: Date };
 
+export const MESSAGE_PAGE = 200;
+const MESSAGE_COLUMNS = { id: messages.id, role: messages.role, content: messages.content, runId: messages.runId, createdAt: messages.createdAt };
+// 游标比较必须全程留在 SQL 里，不能先把 cursor 的 created_at 读成 JS Date 再传回下一条查询当参数：
+// Postgres 的 timestamptz 精确到微秒，JS Date 只精确到毫秒，读出来再传回去会截断，导致游标那条消息
+// 自己的 created_at（全精度）被判定为"大于"截断后的游标值，把它自己也当成"新消息"返回。
+// 用同一条消息表的相关子查询直接在数据库里比较，从根上避开这个精度问题。
+const OUTER_CREATED_AT = sql.raw('"app"."messages"."created_at"');
+const OUTER_ID = sql.raw('"app"."messages"."id"');
+
 /**
- * 一个会话的完整消息历史，供老师工作台展示。调用方必须先确认这位老师确实是当前接管人——
- * 这里不做授权判断（和 chat/runs.ts 的读取函数一样，授权是路由层的职责，这里只读数据）。
+ * 一个会话的消息，学员和老师工作台共用（调用方各自负责授权：学员是本人会话，老师是当前接管人——
+ * 这里不做授权判断，和 chat/runs.ts 的读取函数一样，只读数据）。
+ *
+ * 不传 after：最近 MESSAGE_PAGE 条快照（按时间正序返回）。传 after（某条消息的 id）：只返回
+ * 那条之后的新消息（增量，同样最多 MESSAGE_PAGE 条防止突发爆量），给轮询用——避免每次把整个
+ * 200 条窗口重新传一遍。after 查不到（游标过期、传了别的会话的消息 id 等）时退化成快照而不报错，
+ * 调用方不用为这些边缘情况单独处理；查不到也不会区分"是别的会话的"还是"根本不存在"，不泄露信息。
  */
-export async function listConversationMessages(db: Pick<Db, "select">, conversationId: string): Promise<ConversationMessage[]> {
+export async function listConversationMessages(db: Pick<Db, "select">, conversationId: string, after?: string): Promise<ConversationMessage[]> {
+  if (after) {
+    const [cursor] = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(and(eq(messages.conversationId, conversationId), eq(messages.id, after)));
+    if (cursor) {
+      return db
+        .select(MESSAGE_COLUMNS)
+        .from(messages)
+        .where(and(
+          eq(messages.conversationId, conversationId),
+          sql`(${OUTER_CREATED_AT}, ${OUTER_ID}) > (select m2.created_at, m2.id from ${messages} m2 where m2.id = ${after})`,
+        ))
+        .orderBy(asc(messages.createdAt), asc(messages.id))
+        .limit(MESSAGE_PAGE);
+    }
+  }
   const rows = await db
-    .select({ id: messages.id, role: messages.role, content: messages.content, runId: messages.runId, createdAt: messages.createdAt })
+    .select(MESSAGE_COLUMNS)
     .from(messages)
     .where(eq(messages.conversationId, conversationId))
     .orderBy(desc(messages.createdAt), desc(messages.id))
-    .limit(200);
+    .limit(MESSAGE_PAGE);
   return rows.reverse();
 }
 

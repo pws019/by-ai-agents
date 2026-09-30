@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { CARD, completed, delta, ev, handoffStatus, tool } from "./testing";
-import { applyEvent, clearConfirmation, emptyChat, failTurn, fromServer, markDisconnected, startResume, startTurn, type ChatState } from "./state";
+import { appendServer, applyEvent, clearConfirmation, emptyChat, failTurn, fromServer, markDisconnected, startResume, startTurn, type ChatState } from "./state";
 
 const play = (state: ChatState, ...events: Parameters<typeof applyEvent>[1][]) => events.reduce(applyEvent, state);
 const last = (s: ChatState) => s.messages.at(-1)!;
@@ -82,5 +82,18 @@ describe("事件 → 状态", () => {
   test("Agent 自己判断转人工：handoff.status 先到，随后还有固定回复的 completed 跟着来——占位被清掉后自动新建一条", () => {
     const s = play(startTurn(emptyChat(), "cm", "转人工"), handoffStatus("queued"), completed("已经帮你转接老师"));
     assert.deepEqual([s.mode, last(s).role, last(s).content, last(s).state], ["queued", "assistant", "已经帮你转接老师", "done"]);
+  });
+
+  test("appendServer：轮询增量只接在已有列表后面，不重建整个状态", () => {
+    const base = fromServer([{ id: "1", role: "user", content: "在吗" }], null, "queued");
+    const s = appendServer(base, [{ id: "2", role: "teacher", content: "我在的" }], null, "human");
+    assert.deepEqual(s.messages.map((m) => [m.id, m.role, m.content]), [["1", "user", "在吗"], ["2", "teacher", "我在的"]]);
+    assert.equal(s.mode, "human");
+  });
+
+  test("appendServer：items 为空时只更新 pendingConfirmation/mode，不动消息列表", () => {
+    const base = fromServer([{ id: "1", role: "user", content: "在吗" }], null, "queued");
+    const s = appendServer(base, [], CARD, "human");
+    assert.deepEqual([s.messages.length, s.pendingConfirmation, s.mode], [1, CARD, "human"]);
   });
 });

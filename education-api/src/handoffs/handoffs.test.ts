@@ -657,6 +657,23 @@ describe("老师工作台：会话消息（GET /teacher/conversations/:id/messag
     assert.equal(body.handoff.summary, SUMMARY);
   });
 
+  test("带 after 只返回它之后的新消息，供老师工作台轮询用", async () => {
+    const conversationId = await newConversation();
+    const { id: handoffId, revision } = await requestHandoffVia(conversationId);
+    await claim(handoffId, revision, teacherCookie);
+    await studentSays(conversationId, "还在吗", "wb-after-1");
+
+    const first = (await (await teacherMessages(conversationId)).json()).items;
+    assert.equal(first.length, 1);
+
+    const empty = await (await get(`/teacher/conversations/${conversationId}/messages?after=${first[0].id}`, teacherCookie)).json();
+    assert.deepEqual(empty.items, []);
+
+    await teacherSays(conversationId, "我在的", "wb-after-2", teacherCookie);
+    const incremental = await (await get(`/teacher/conversations/${conversationId}/messages?after=${first[0].id}`, teacherCookie)).json();
+    assert.deepEqual(incremental.items.map((m: { role: string; content: string }) => [m.role, m.content]), [["teacher", "我在的"]]);
+  });
+
   test("结束接管之后：不再是接管人，409（不能翻看已经放回机器人的会话）", async () => {
     const conversationId = await newConversation();
     const { id: handoffId, revision } = await requestHandoffVia(conversationId);

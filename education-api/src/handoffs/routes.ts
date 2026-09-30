@@ -3,7 +3,7 @@
 //   GET  /teacher/handoffs                     老师工作台的队列：进行中（排队+已接管）的记录
 //   POST /teacher/handoffs/:id/claim           老师接管（expectedRevision）
 //   POST /teacher/handoffs/:id/release         老师结束接管，会话回到 bot（expectedRevision）
-//   GET  /teacher/conversations/:id/messages   已接管会话的完整消息历史（只有接管人能看）
+//   GET  /teacher/conversations/:id/messages   已接管会话的消息（只有接管人能看，支持 ?after= 增量轮询，见 handoffs.ts）
 //   POST /teacher/conversations/:id/messages   接管中的老师发消息（clientMessageId 去重）
 // 这些路径都在 app.ts 里对 Agent 通道关闭（/conversations/*、/teacher/*）：接管由学员本人或 BFF 发起，
 // Agent 服务不直接读写会话——它只通过事件流告诉 BFF"我认为该转人工"，由 BFF 落库（见 chat/supervisor.ts）。
@@ -80,7 +80,7 @@ export function createHandoffRoutes(db: Db): Hono {
     if (!handoff || handoff.status !== "claimed") return errorJson(c, 409, "INVALID_STATE", "这个会话不在你的接管中");
     if (handoff.teacherId !== actor.id) return errorJson(c, 403, "FORBIDDEN", "这个会话正被另一位老师接管");
 
-    const items = await listConversationMessages(db, conversationId);
+    const items = await listConversationMessages(db, conversationId, c.req.query("after"));
     return c.json({ items: items.map(toMessage), handoff: toHandoff(handoff, "teacher") });
   });
 

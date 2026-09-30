@@ -40,7 +40,8 @@ export const listConversations = () => json<{ items: ConversationSummary[] }>("/
 export const chatApi: ChatApi = {
   sendMessage: (conversationId, body) => stream(`/conversations/${conversationId}/messages`, body),
   resume: (conversationId) => stream(`/conversations/${conversationId}/resume`),
-  getMessages: (conversationId) => json<MessagesResponse>(`/conversations/${conversationId}/messages`),
+  getMessages: (conversationId, after) =>
+    json<MessagesResponse>(`/conversations/${conversationId}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`),
   confirmApplication,
   requestHandoff,
 };

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { chatApi, createConversation, newClientMessageId } from "../lib/chat/api";
 import { confirmDraft, openConversation, requestHandoff as requestHandoffFlow, sendTurn } from "../lib/chat/session";
-import { emptyChat, fromServer, withNotice, type ChatState } from "../lib/chat/state";
+import { appendServer, emptyChat, fromServer, withNotice, type ChatState } from "../lib/chat/state";
 
 const HANDOFF_POLL_MS = 4000;
 
@@ -23,10 +23,17 @@ export function useChat({ conversationId, onCreated }: UseChatOptions) {
 
   const stateRef = useRef(state);
   const flow = useRef(0);
+  // 轮询的增量游标：只在"本地消息列表确定和服务端一致"时才可信，见下面 update() 和轮询 effect 的说明。
+  const lastPolledId = useRef<string | null>(null);
 
-  const update = useCallback((s: ChatState) => {
+  const update = useCallback((s: ChatState, opts?: { fromPoll?: boolean }) => {
     stateRef.current = s;
     setState(s);
+    // 除了轮询自己写回的结果，任何其它来源的更新（发消息、确认、转人工……）都可能往消息列表里加了一条
+    // 还没换成服务端真实 id 的乐观消息（比如排队/接管期间学员自己发的话，只会被记录，不会有事件把它的
+    // id 纠正过来）。这种情况下游标不再可信：清空它，让下一次轮询退化成全量快照而不是继续增量追加，
+    // 否则那条乐观消息和服务端返回的同一条真实记录会重复出现。
+    if (!opts?.fromPoll) lastPolledId.current = null;
   }, []);
 
   useEffect(() => {
@@ -60,17 +67,28 @@ export function useChat({ conversationId, onCreated }: UseChatOptions) {
   // 老师异步回复、学员在别处发的话，都不会通过当前这条（早已关闭的）连接推给这边——轮询是这套
   // "围绕一次运行设计"的架构下最小的修补，不是真正的推送。mode 回到 bot 就停（下一次 render 发现
   // 条件不满足，不会再开定时器）。
+  //
+  // 第一次轮询（游标为空）总是拉全量快照，把本地状态和服务端彻底对齐一次；之后只要没有别的本地更新
+  // 插进来（update() 里会清空游标），就用 after 只拉增量、接到已有列表后面——避免接管期间每隔几秒就把
+  // 整个历史重新传一遍（见 progress.md 关于轮询开销的讨论）。
   useEffect(() => {
     if (!conversationId || state.mode === "bot") return;
+    lastPolledId.current = null;
     const timer = setInterval(() => {
       if (stateRef.current.phase !== "idle") return; // 有别的操作正在进行（发送/确认/转人工），这一轮跳过
+      const after = lastPolledId.current ?? undefined;
       void chatApi
-        .getMessages(conversationId)
+        .getMessages(conversationId, after)
         .then((res) => {
           if (stateRef.current.phase !== "idle") return; // 拿到结果时状态可能已经变了，别覆盖正在发生的事
-          update(fromServer(res.items, res.pendingConfirmation, res.mode, { notice: stateRef.current.notice }));
+          const lastItem = res.items.at(-1);
+          if (lastItem) lastPolledId.current = lastItem.id;
+          const next = after
+            ? appendServer(stateRef.current, res.items, res.pendingConfirmation, res.mode)
+            : fromServer(res.items, res.pendingConfirmation, res.mode, { notice: stateRef.current.notice });
+          update(next, { fromPoll: true });
         })
-        .catch(() => {}); // 偶尔一次失败不打扰用户，下一次自然会再试
+        .catch(() => {}); // 偶尔一次失败不打扰用户，下一次自然会再试（游标没推进，下次还是从同一个位置增量拉）
     }, HANDOFF_POLL_MS);
     return () => clearInterval(timer);
   }, [conversationId, state.mode, update]);

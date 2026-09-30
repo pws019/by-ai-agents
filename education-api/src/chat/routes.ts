@@ -8,7 +8,7 @@ import type { Db } from "../db/pool.js";
 import { conversations, messages } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import type { AgentClient, AgentEvent } from "./agentClient.js";
-import { findActiveHandoff, toHandoff } from "../handoffs/handoffs.js";
+import { findActiveHandoff, listConversationMessages, toHandoff } from "../handoffs/handoffs.js";
 import { findPendingConfirmationForConversation } from "../routes/applications.js";
 import { findOwnedConversation, latestRun, startMessageRun, startResumeRun } from "./runs.js";
 import { beginRun, type BeginResult, type RunChannel } from "./supervisor.js";
@@ -16,7 +16,6 @@ import { beginRun, type BeginResult, type RunChannel } from "./supervisor.js";
 // 单表查询里 drizzle 会把 ${conversations.id} 渲染成不带表名的 "id"，放进子查询就被解析成 messages 自己的 id、永远匹配不上，
 // 所以子查询里对外层会话 id 的引用必须显式带上表名。
 const OUTER_CONVERSATION_ID = sql.raw('"app"."conversations"."id"');
-const MESSAGE_PAGE = 200;
 const TITLE_MAX_CHARS = 24;
 
 // 会话标题：首条用户消息截断（首版不提供改名）。按字符而不是字节截断，不会把汉字切成两半。
@@ -71,19 +70,15 @@ export function createConversationRoutes(db: Db, deps: ChatDeps = {}): Hono {
   });
 
   // 断线后的恢复入口：已存消息 + 最近一次运行的状态（含"租约过期 → 失败"的判定，见 latestRun）。
+  // 不传 after 是完整快照（首次打开/断线重连）；轮询时带上目前看到的最后一条消息 id 作为 after，
+  // 只拿增量——排队/接管期间前端要反复轮询才能看到对方的消息，不加这个游标每次都要重传整个窗口。
   app.get("/conversations/:conversationId/messages", requireAuth, student, async (c) => {
     const actor = c.get("actor")!;
     const conversation = await findOwnedConversation(db, c.req.param("conversationId")!, actor.id);
     if (!conversation) return errorJson(c, 404, "NOT_FOUND", "会话不存在");
 
-    const recent = await db
-      .select()
-      .from(messages)
-      .where(eq(messages.conversationId, conversation.id))
-      .orderBy(desc(messages.createdAt), desc(messages.id))
-      .limit(MESSAGE_PAGE);
     return c.json({
-      items: recent.reverse().map((m) => ({ id: m.id, role: m.role, content: m.content, runId: m.runId, createdAt: m.createdAt })),
+      items: await listConversationMessages(db, conversation.id, c.req.query("after")),
       run: await latestRun(db, conversation.id),
       // 排队/人工接管的状态：前端据此显示"排队中 / 老师处理中"，刷新页面后也能找回。
       mode: conversation.mode,

@@ -46,17 +46,17 @@ export async function* events(list: StreamEvent[], dropAfter?: Error): AsyncGene
 export interface FakeApiOptions {
   send?: (call: number) => Promise<AsyncIterable<StreamEvent>>;
   resume?: () => Promise<AsyncIterable<StreamEvent>>;
-  messages?: (call: number) => Promise<MessagesResponse>;
+  messages?: (call: number, after?: string) => Promise<MessagesResponse>;
   confirm?: () => Promise<unknown>;
   handoff?: () => Promise<unknown>;
 }
 
 export function fakeApi(o: FakeApiOptions = {}) {
-  const calls = { send: 0, resume: 0, messages: 0, confirm: 0, handoff: 0, sentBodies: [] as { clientMessageId: string; text: string }[] };
+  const calls = { send: 0, resume: 0, messages: 0, confirm: 0, handoff: 0, sentBodies: [] as { clientMessageId: string; text: string }[], messagesAfter: [] as (string | undefined)[] };
   const api: ChatApi = {
     sendMessage: async (_id, body) => { calls.send++; calls.sentBodies.push(body); return o.send!(calls.send); },
     resume: async () => { calls.resume++; return o.resume!(); },
-    getMessages: async () => { calls.messages++; return o.messages!(calls.messages); },
+    getMessages: async (_id, after) => { calls.messages++; calls.messagesAfter.push(after); return o.messages!(calls.messages, after); },
     confirmApplication: async () => { calls.confirm++; return o.confirm ? o.confirm() : {}; },
     requestHandoff: async () => { calls.handoff++; return o.handoff ? o.handoff() : {}; },
   };

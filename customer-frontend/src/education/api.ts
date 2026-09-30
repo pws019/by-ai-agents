@@ -130,8 +130,11 @@ export const claimHandoff = (handoffId: string, body: { expectedRevision: number
 export const releaseHandoff = (handoffId: string, body: { expectedRevision: number }) =>
   request<Handoff>(`/teacher/handoffs/${handoffId}/release`, { method: "POST", body: JSON.stringify(body) });
 
-export const getTeacherConversationMessages = (conversationId: string) =>
-  request<{ items: ConversationMessage[]; handoff: Handoff }>(`/teacher/conversations/${conversationId}/messages`);
+/** after：只要某条消息 id 之后的新消息（轮询增量用）；不传是最近 200 条快照。见 education-api 的同名参数。 */
+export const getTeacherConversationMessages = (conversationId: string, after?: string) =>
+  request<{ items: ConversationMessage[]; handoff: Handoff }>(
+    `/teacher/conversations/${conversationId}/messages${after ? `?after=${encodeURIComponent(after)}` : ""}`,
+  );
 
 export const teacherSendChatMessage = (conversationId: string, body: { clientMessageId: string; text: string }) =>
   request<ConversationMessage>(`/teacher/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify(body) });

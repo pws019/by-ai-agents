@@ -23,6 +23,9 @@ export function TeacherHandoffsPage() {
   busyRef.current = busy;
   // 查询与发送共享编号：新请求、切换会话或卸载后，旧响应不再有权修改消息区。
   const messageRequest = useRef(0);
+  // 轮询增量游标：这里没有"乐观占位消息"这个问题——send() append 的就是服务端返回的真实记录（见下方），
+  // 所以只要是进了 messages 状态的消息，id 就一定是服务端的真实 id，可以放心当作下一次轮询的 after。
+  const lastMessageId = useRef<string | null>(null);
 
   const selected = handoffs?.find((h) => h.id === selectedId) ?? null;
   // 只有"当前是我接管的"才能看消息、发消息——排队中的、被别的老师接管的，后端也会拒绝（这里提前不显示，减少无意义的失败请求）。
@@ -46,15 +49,22 @@ export function TeacherHandoffsPage() {
   useEffect(() => {
     let active = true;
     setMessages(null);
+    lastMessageId.current = null;
     if (!selected || !mine) {
       return;
     }
     const conversationId = selected.conversationId;
+    // 第一次（游标为空）拉全量；之后只要游标还在，就带 after 只拉增量、接到已有列表后面——
+    // 接管期间反复轮询不用每次把整个消息列表重新传一遍（见 progress.md 关于轮询开销的讨论）。
     async function loadMessages() {
       const requestId = ++messageRequest.current;
+      const after = lastMessageId.current ?? undefined;
       try {
-        const { items } = await getTeacherConversationMessages(conversationId);
-        if (active && requestId === messageRequest.current) setMessages(items);
+        const { items } = await getTeacherConversationMessages(conversationId, after);
+        if (!active || requestId !== messageRequest.current) return;
+        const lastItem = items.at(-1);
+        if (lastItem) lastMessageId.current = lastItem.id;
+        setMessages((prev) => (after && prev ? [...prev, ...items] : items));
       } catch {
         if (active && requestId === messageRequest.current) setError("加载消息失败");
       }
@@ -101,6 +111,7 @@ export function TeacherHandoffsPage() {
     try {
       const sent = await teacherSendChatMessage(selected.conversationId, { clientMessageId: crypto.randomUUID(), text });
       if (requestId !== messageRequest.current) return;
+      lastMessageId.current = sent.id; // sent 是服务端返回的真实记录，游标可以放心推进，下一次轮询的 after 不用再算这条
       setMessages((prev) => [...(prev ?? []), sent]);
       setReply("");
     } catch (err) {

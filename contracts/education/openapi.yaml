@@ -663,8 +663,17 @@ paths:
     get:
       tags: [chat]
       operationId: listMessages
-      summary: 断线后据此恢复最终消息与任务状态（V1 不重放 token）
-      parameters: [{$ref: '#/components/parameters/ConversationId'}]
+      summary: 断线后据此恢复最终消息与任务状态（V1 不重放 token）；也用于排队/接管期间轮询对方消息
+      parameters:
+        - {$ref: '#/components/parameters/ConversationId'}
+        - name: after
+          in: query
+          required: false
+          description: |
+            不传：返回最近 200 条消息（快照）。传某条消息的 id：只返回它之后的新消息（增量，同样最多 200 条），
+            给轮询用，避免排队/接管期间每次都重新拉整个窗口。这个 id 查不到（游标过期、传了别的会话的消息 id 等）
+            时退化成快照，不报错。
+          schema: {type: string, format: uuid}
       responses:
         '200':
           description: 消息与运行状态
@@ -675,6 +684,7 @@ paths:
                 required: [items, run, pendingConfirmation, mode, handoff]
                 properties:
                   items:
+                    description: 不传 after 时是最近 200 条快照；传 after 时是它之后的新消息（可能为空数组）。
                     type: array
                     items: {$ref: '#/components/schemas/Message'}
                   mode:
@@ -874,11 +884,17 @@ paths:
     get:
       tags: [teacher]
       operationId: listConversationMessagesForTeacher
-      summary: 已接管会话的完整消息与交接摘要，供老师工作台展示
+      summary: 已接管会话的消息与交接摘要，供老师工作台展示；也用于接管期间轮询学员消息
       description: |
         只有当前接管这个会话的老师能看（最小暴露：不能翻看别人接管过、或还在排队没人接管的会话）。
         不在你的接管中（排队中、被别人接管、或早已回到 bot）返回 409 INVALID_STATE；被另一位老师接管返回 403。
-      parameters: [{$ref: '#/components/parameters/ConversationId'}]
+      parameters:
+        - {$ref: '#/components/parameters/ConversationId'}
+        - name: after
+          in: query
+          required: false
+          description: 同 GET /conversations/{conversationId}/messages 的 after：不传是最近 200 条快照，传某条消息 id 是它之后的增量。
+          schema: {type: string, format: uuid}
       responses:
         '200':
           description: 消息与交接摘要
@@ -889,6 +905,7 @@ paths:
                 required: [items, handoff]
                 properties:
                   items:
+                    description: 不传 after 时是最近 200 条快照；传 after 时是它之后的新消息（可能为空数组）。
                     type: array
                     items: {$ref: '#/components/schemas/Message'}
                   handoff: {$ref: '#/components/schemas/Handoff'}

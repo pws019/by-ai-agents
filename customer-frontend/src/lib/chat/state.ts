@@ -126,6 +126,25 @@ export function fromServer(
   };
 }
 
+/**
+ * 轮询增量结果：只把新消息接到已有列表后面，不重建整个状态（用于排队/接管期间的轮询，避免每次
+ * 把整个消息列表重新替换一遍）。items 为空数组时只更新 pendingConfirmation/mode。
+ * 调用前提：本地消息列表自上一次全量同步（fromServer）以来没有被别的来源改过——调用方（useChat）
+ * 负责保证这一点：任何本地产生的更新（发消息、确认、转人工……）都会让下一次轮询改走全量快照，
+ * 而不是继续在这里追加，避免本地乐观消息（用 clientMessageId 占位，还没换成服务端真实 id）
+ * 和服务端返回的同一条消息重复出现。
+ */
+export function appendServer(state: ChatState, items: ServerMessage[], pendingConfirmation: ConfirmationCard | null, mode: ConversationMode): ChatState {
+  if (items.length === 0) return { ...state, pendingConfirmation, mode };
+  return {
+    ...state,
+    messages: [...state.messages, ...items.map((m) => ({ id: m.id, role: m.role, content: m.content, tools: [] as ToolStatus[], state: "done" as const }))],
+    pendingConfirmation,
+    mode,
+    phase: "idle",
+  };
+}
+
 // ---- 内部 ---------------------------------------------------------------------------------
 
 function lastAssistantIndex(state: ChatState): number {

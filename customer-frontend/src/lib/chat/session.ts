@@ -26,7 +26,8 @@ export interface ChatApi {
   /** 开流之前就被拒绝（409/503 等）时 reject 为 ApiError；成功则返回事件流。 */
   sendMessage(conversationId: string, body: { clientMessageId: string; text: string }): Promise<AsyncIterable<StreamEvent>>;
   resume(conversationId: string): Promise<AsyncIterable<StreamEvent>>;
-  getMessages(conversationId: string): Promise<MessagesResponse>;
+  /** after：只要某条消息 id 之后的新消息（轮询增量用）；不传是最近 200 条快照。见 education-api 的同名参数。 */
+  getMessages(conversationId: string, after?: string): Promise<MessagesResponse>;
   /** 用户本人对业务 API 的确认（不是 Agent 的能力）。 */
   confirmApplication(applicationId: string, body: { confirmationId: string; expectedRevision: number }): Promise<unknown>;
   /** 用户本人请求老师接管（不是 Agent 的能力）：会话 bot → queued。 */
