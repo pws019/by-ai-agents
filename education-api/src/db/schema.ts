@@ -97,6 +97,27 @@ export const enrollments = app.table("enrollments", {
   ...timestamps,
 });
 
+export const knowledgeDocuments = app.table("knowledge_documents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  lessonId: uuid("lesson_id").notNull(),
+  kind: text("kind").notNull().$type<"srt" | "vtt" | "markdown">(),
+  sourceName: text("source_name").notNull(),
+  sourceHash: text("source_hash").notNull(),
+  version: integer("version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const knowledgeSegments = app.table("knowledge_segments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  documentId: uuid("document_id").notNull(),
+  position: integer("position").notNull(),
+  content: text("content").notNull(),
+  contentHash: text("content_hash").notNull(),
+  startMs: integer("start_ms"),
+  endMs: integer("end_ms"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const learningProgress = app.table("learning_progress", {
   id: uuid("id").primaryKey().defaultRandom(),
   studentId: uuid("student_id").notNull(),
