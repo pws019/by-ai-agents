@@ -220,7 +220,7 @@ def _expiring_after_authorize() -> RunContext:
     return Flaky("student-1", "student", "req-1", int(time.time() + 60), TOKEN)
 
 
-# ---- 历史裁剪（progress.md 已知局限第 1 层）------------------------------------------------
+# ---- 历史裁剪（progress.md 已知局限第 1、3 层）---------------------------------------------
 
 async def test_old_turns_are_trimmed_once_history_exceeds_the_token_budget(monkeypatch):
     import education_agent.graphs.student_graph as sg
@@ -239,9 +239,37 @@ async def test_old_turns_are_trimmed_once_history_exceeds_the_token_budget(monke
     assert not any("第一轮" in m["content"] for m in last_route_msgs), "太旧的轮次应该已经被裁掉，不再发给模型"
     assert any("第三轮" in m["content"] for m in last_route_msgs), "最近的轮次必须留下"
 
-    # 裁剪只影响"发给模型看的"输入，checkpoint 里持久化的历史必须保持完整（见 model/base.py 的设计说明）。
+    # respond 用 Overwrite 把持久化的 messages 也裁到同一个预算内（已知局限第 3 层）：
+    # 不再是"只裁模型输入、checkpoint 里留着全量"，太旧的轮次这里也应该已经不在了。
     snap = await h.snapshot()
-    assert any("第一轮" in m["content"] for m in snap.values["messages"] if m["role"] == "user")
+    assert not any("第一轮" in m["content"] for m in snap.values["messages"] if m["role"] == "user")
+    assert any("第三轮" in m["content"] for m in snap.values["messages"] if m["role"] == "user")
+
+
+async def test_handoff_facts_survive_even_after_the_originating_turn_is_trimmed_away(monkeypatch):
+    # 核心正确性保证：messages 被裁剪掉的轮次，它当时核验过的事实不能跟着从交接摘要里消失
+    # （handoff_facts/handoff_applications/handoff_quotes 是独立累加的状态，不依赖裁剪后的 messages）。
+    import education_agent.graphs.student_graph as sg
+    monkeypatch.setattr(sg, "HISTORY_TOKEN_BUDGET", 20)
+
+    h = Harness([
+        route("query"), ModelReply(tool_calls=(call("getMyEnrollment", {}),)),
+        ModelReply(text="你有一个在读的报名"),  # 模型这句话本身不该进摘要，下面只断言工具返回的事实
+        route("query"), ModelReply(text="ok2"),
+        route("handoff"),
+    ], checkpointer=InMemorySaver())
+    await h.say("第一轮：这是一段刻意写长一点的问题，问问我的报名情况，用来撑满很小的裁剪预算")
+    await h.say("第二轮：一段同样很长的无关闲聊内容，目的是把第一轮彻底挤出裁剪窗口之外")
+    out = await h.say("转人工")
+
+    snap = await h.snapshot()
+    assert not any("第一轮" in m["content"] for m in snap.values["messages"] if m["role"] == "user"), "对照：第一轮确实已经被裁掉了"
+
+    # 事实来自 business_api() mock（test_student_graph.py 顶部）对 /me/enrollments 的固定返回，
+    # 不是模型那句话——事实必须来自工具结果，这也是 handoff.py 一直在保护的边界。
+    assert any("报名 1 个" in f for f in snap.values["handoff_facts"])
+    assert any("第一轮" in q for q in snap.values["handoff_quotes"]) or any("第二轮" in q for q in snap.values["handoff_quotes"])
+    assert out["stop_reason"] == "handoff_requested"
 
 
 async def test_trimming_never_splits_a_tool_call_from_its_result(monkeypatch):

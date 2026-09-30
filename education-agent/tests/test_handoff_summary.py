@@ -7,7 +7,7 @@
 """
 import json
 
-from education_agent.graphs.handoff import REASON_STUDENT_REQUEST, build_handoff_summary
+from education_agent.graphs.handoff import REASON_STUDENT_REQUEST, build_handoff_summary, extract_from_messages
 
 
 def user(text: str) -> dict:
@@ -30,7 +30,10 @@ def tool_err(call_id: str, code: str) -> dict:
 
 
 def summarize(messages: list[dict], reason: str = REASON_STUDENT_REQUEST) -> str:
-    return build_handoff_summary(messages, reason)
+    # 扫一遍完整历史等价于"从头到尾都没裁剪过"：这里只测抽取+拼接的正确性，不测增量累加本身
+    # （增量累加在 test_student_graph.py 里，随 Overwrite 裁剪一起验证）。
+    quotes, facts, applications, failures = extract_from_messages(messages)
+    return build_handoff_summary(quotes=quotes, facts=facts, applications=applications, failures=failures, reason=reason)
 
 
 def test_every_section_is_present_and_empty_ones_say_none():

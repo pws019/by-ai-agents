@@ -8,6 +8,12 @@ requirements F-006：摘要包含问题、已核验事实、相关申请、工�
 工具消息的内容取自 ToolResult.model_view()，本来就不含确认卡和凭证，所以这里也不会带出它们。
 
 摘要的每一节都会出现；没有内容的写"无"。这样老师能区分"没有相关申请"和"忘了写"。
+
+抽取（extract_from_messages）和拼字符串（build_handoff_summary）分成两步：抽取是纯函数，既可以扫一段完整历史，
+也可以只扫某次运行新增的那几条消息，返回值天然可以用简单的 reducer 累加起来。这是为了配合
+student_graph.py 用 langgraph.types.Overwrite 真正裁剪持久化的 messages（已知局限第 3 层）——
+一旦裁掉较早的轮次，交接摘要不能再靠"重新扫一遍 messages"找回那些早已核验过的事实，
+必须在每轮产生时就增量累加进独立的、不随 messages 裁剪而丢失的状态字段。
 """
 import json
 from typing import Any
@@ -20,12 +26,17 @@ REASON_STUDENT_REQUEST = "学员主动请求转人工"
 MAX_QUOTES = 3  # 最多引用学员最近几句话
 QUOTE_CHARS = 200
 MAX_LIST_ITEMS = 5
+MAX_FACTS_KEPT = 20  # 防止极长对话下这个列表本身无界增长；申请按 id 去重、天然有限，不需要单独设上限
 
 _APPLICATION_TYPE = {"transfer": "转班", "refund": "退费"}
 _ENROLLMENT_STATUS = {"active": "在读", "ended": "已结束"}
 
 
-def build_handoff_summary(messages: list[Message], reason: str) -> str:
+def extract_from_messages(messages: list[Message]) -> tuple[list[str], list[str], dict[str, str], list[str]]:
+    """从一段消息（完整历史，或某次运行新增的一小段）里抽取交接摘要要用的素材：
+    (学员原话引用, 已核验事实, 申请 id→一行描述, 工具失败)。纯函数，可以对增量消息反复调用，
+    再用下面几个 merge_* reducer 累加成跨轮不丢失的状态（见 student_graph.GraphState）。
+    """
     calls = {c["id"]: c["name"] for m in messages if m["role"] == "assistant" for c in m.get("tool_calls", [])}
 
     facts: list[str] = []
@@ -49,12 +60,29 @@ def build_handoff_summary(messages: list[Message], reason: str) -> str:
         else:
             facts.append(_fact(name, data))
 
-    quotes = [_quote(m["content"]) for m in messages if m["role"] == "user" and m.get("content")][-MAX_QUOTES:]
+    quotes = [_quote(m["content"]) for m in messages if m["role"] == "user" and m.get("content")]
+    return quotes, facts, applications, failures
 
+
+def merge_quotes(existing: list[str], update: list[str]) -> list[str]:
+    return (existing + update)[-MAX_QUOTES:]
+
+
+def merge_capped_unique(existing: list[str], update: list[str]) -> list[str]:
+    return list(dict.fromkeys([*existing, *update]))[-MAX_FACTS_KEPT:]
+
+
+def merge_applications(existing: dict[str, str], update: dict[str, str]) -> dict[str, str]:
+    return {**existing, **update}
+
+
+def build_handoff_summary(
+    *, quotes: list[str], facts: list[str], applications: dict[str, str], failures: list[str], reason: str
+) -> str:
     return "\n".join(
         [
             "【学员诉求】",
-            *_bullets([f"“{q}”" for q in quotes]),
+            *_bullets([f"“{q}”" for q in quotes[-MAX_QUOTES:]]),
             "【已核验事实】",
             *_bullets(_dedupe(facts)),
             "【相关申请】",

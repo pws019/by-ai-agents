@@ -35,13 +35,20 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import interrupt
+from langgraph.types import Overwrite, interrupt
 
 from ..model.base import ChatModel, Message
 from ..tools.context import RunContext
 from ..tools.runtime import ToolRuntime
 from ..tools.spec import RunBudget
-from .handoff import REASON_STUDENT_REQUEST, build_handoff_summary
+from .handoff import (
+    REASON_STUDENT_REQUEST,
+    build_handoff_summary,
+    extract_from_messages,
+    merge_applications,
+    merge_capped_unique,
+    merge_quotes,
+)
 from .loop import run_tool_loop
 
 QUERY_TOOLS = {"getCurrentOffering", "getMyEnrollment", "getMySchedule", "getMyProgress", "getTransferTargets", "getApplicationStatus"}
@@ -95,6 +102,11 @@ class GraphState(TypedDict, total=False):
     stop_reason: str
     reply: str
     confirmation: dict | None  # 确认卡：给 UI/图用，不进入 messages（不让模型看到）；verify_outcome 之后清空
+    # 转人工摘要的素材：跨轮累加、不随 messages 被 Overwrite 裁剪而丢失（已知局限第 3 层，见 handoff.py 顶部说明）。
+    handoff_quotes: Annotated[list[str], merge_quotes]
+    handoff_facts: Annotated[list[str], merge_capped_unique]
+    handoff_applications: Annotated[dict[str, str], merge_applications]
+    handoff_failures: Annotated[list[str], merge_capped_unique]
 
 
 @dataclass(frozen=True)
@@ -112,6 +124,11 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
     async def load_authorized_context(state: GraphState, runtime: Runtime[RunScope]) -> GraphState:
         # 每轮重置临时字段：状态跨轮保留，上一轮的确认卡/结束原因不能带到这一轮。
         fresh: GraphState = {"branch": "", "stop_reason": "", "reply": "", "confirmation": None}
+        # 这个节点是每一轮唯一必经的入口（哪怕后面因登录过期短路到 respond），此刻 state["messages"]
+        # 的最后一条正好是这一轮的新用户消息（图输入在节点运行前已经合并进状态）：在这里顺手把它计入
+        # 交接摘要的引用素材，转人工时才不会因为 messages 已被裁剪而找不到早期轮次说过的话。
+        quotes, _facts, _applications, _failures = extract_from_messages(state["messages"][-1:])
+        fresh["handoff_quotes"] = quotes
         if runtime.context.ctx.is_expired():
             return {**fresh, "stop_reason": "auth_expired"}
         return fresh  # M4 起，这里还要取出学员有权访问的班期/内容范围，供检索过滤使用
@@ -132,9 +149,12 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
                 messages=[_system(prompt), *history],
                 emit=get_stream_writer(),  # 自定义流通道：调用方用 stream_mode="custom" 才会收到；用 ainvoke 时相当于空操作
             )
+            # 只扫这次新增的消息（不是整个 state["messages"]）：足够增量累加，也不会随对话变长而重复扫描历史。
+            _quotes, facts, applications, failures = extract_from_messages(result.new_messages)
             return {
                 "messages": result.new_messages, "stop_reason": result.stop,
                 "reply": result.text, "confirmation": result.confirmation,
+                "handoff_facts": facts, "handoff_applications": applications, "handoff_failures": failures,
             }
         return node
 
@@ -146,21 +166,31 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
         get_stream_writer()({
             "type": "handoff.requested",
             "reason": REASON_STUDENT_REQUEST,
-            "summary": build_handoff_summary(state["messages"], REASON_STUDENT_REQUEST),
+            "summary": build_handoff_summary(
+                quotes=state.get("handoff_quotes", []), facts=state.get("handoff_facts", []),
+                applications=state.get("handoff_applications", {}), failures=state.get("handoff_failures", []),
+                reason=REASON_STUDENT_REQUEST,
+            ),
         })
         return {"stop_reason": "handoff_requested"}
 
     async def respond(state: GraphState) -> GraphState:
+        # 每一轮的出口，query/application/handoff 三条分支都汇聚到这里：顺手用 Overwrite 把持久化的
+        # messages 真正裁剪掉（已知局限第 3 层），而不只是像 route/branch_node 那样只裁剪"发给模型看的"
+        # 临时副本。裁剪素材已经在 load_authorized_context/branch_node 里增量搬进 handoff_* 字段，
+        # 这里丢掉的历史不会让转人工摘要漏掉早期事实。
         stop, reply = state["stop_reason"], state["reply"]
         if stop == "answered" and reply.strip():
-            return {}  # 最终回答和对应的 assistant 消息已经由循环写好
+            # 最终回答和对应的 assistant 消息已经由循环写好，这里只需要裁剪，不用再追加消息。
+            return {"messages": Overwrite(_trim_to_budget(state["messages"], HISTORY_TOKEN_BUDGET))}
         text = {
             "needs_confirmation": REPLY_NEEDS_CONFIRMATION,
             "budget_exhausted": REPLY_BUDGET_EXHAUSTED,
             "auth_expired": REPLY_AUTH_EXPIRED,
             "handoff_requested": REPLY_HANDOFF,
         }.get(stop, REPLY_EMPTY)
-        return {"reply": text, "messages": [{"role": "assistant", "content": text}]}
+        full = [*state["messages"], {"role": "assistant", "content": text}]
+        return {"reply": text, "messages": Overwrite(_trim_to_budget(full, HISTORY_TOKEN_BUDGET))}
 
     async def await_confirmation(state: GraphState) -> GraphState:
         # 恢复时本节点从头重跑：interrupt 之前只读状态，不做任何有副作用的事。
@@ -179,7 +209,11 @@ def build_student_graph(model: ChatModel, tools: ToolRuntime, checkpointer: Base
             "getApplicationStatus", {"applicationId": card["applicationId"]}, runtime.context.ctx, runtime.context.budget
         )
         text = _outcome_text(res.ok, res.error_code, res.data, card["revision"])
-        return {"reply": text, "messages": [{"role": "assistant", "content": text}], "stop_reason": "resolved", "confirmation": None}
+        full = [*state["messages"], {"role": "assistant", "content": text}]
+        return {
+            "reply": text, "messages": Overwrite(_trim_to_budget(full, HISTORY_TOKEN_BUDGET)),
+            "stop_reason": "resolved", "confirmation": None,
+        }
 
     def after_respond(state: GraphState) -> str:
         return "await_confirmation" if state["stop_reason"] == "needs_confirmation" else END
