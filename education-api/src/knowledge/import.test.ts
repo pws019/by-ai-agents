@@ -9,7 +9,7 @@ import pg from "pg";
 import { DATABASE_URL } from "../db/config.js";
 import { migrate } from "../db/migrate.js";
 import { createDb, createPool, type Db } from "../db/pool.js";
-import { knowledgeSegments } from "../db/schema.js";
+import { knowledgeDocuments, knowledgeSegments } from "../db/schema.js";
 import { dropTestDatabase } from "../testing/db.js";
 import { importKnowledgeDocument } from "./import.js";
 
@@ -95,6 +95,28 @@ describe("导入字幕/讲义", () => {
     assert.equal(result.kind, "imported");
     const rows = await db.select().from(knowledgeSegments).where(eq(knowledgeSegments.documentId, (result as { documentId: string }).documentId));
     assert.ok(rows.every((r) => r.startMs === null && r.endMs === null));
+  });
+
+  test("VTT 带 NOTE 头部：来源/标题/录制时间落进 knowledge_documents；SRT/讲义没有这类头部，三列是 null", async () => {
+    const vtt = `WEBVTT
+
+NOTE 来源：https://www.qianwen.com/record#share?share_id=abc123
+NOTE 标题：真实分享会标题
+NOTE chat_shared_at=2026-07-26T17:11:00+08:00
+
+1
+00:00:01.000 --> 00:00:03.000
+第一句话`;
+    const result = await importKnowledgeDocument(db, { lessonId, kind: "vtt", sourceName: "share.vtt", rawContent: vtt });
+    assert.equal(result.kind, "imported");
+    const [doc] = await db.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.id, (result as { documentId: string }).documentId));
+    assert.equal(doc!.sourceUrl, "https://www.qianwen.com/record#share?share_id=abc123");
+    assert.equal(doc!.sourceTitle, "真实分享会标题");
+    assert.equal(doc!.recordedAt?.toISOString(), new Date("2026-07-26T17:11:00+08:00").toISOString());
+
+    const srtResult = await importKnowledgeDocument(db, { lessonId, kind: "srt", sourceName: "l1.srt", rawContent: SRT });
+    const [srtDoc] = await db.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.id, (srtResult as { documentId: string }).documentId));
+    assert.deepEqual([srtDoc!.sourceUrl, srtDoc!.sourceTitle, srtDoc!.recordedAt], [null, null, null]);
   });
 
   test("不同 lesson 各自独立计数版本号", async () => {

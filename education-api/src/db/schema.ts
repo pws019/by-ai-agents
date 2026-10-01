@@ -104,6 +104,10 @@ export const knowledgeDocuments = app.table("knowledge_documents", {
   sourceName: text("source_name").notNull(),
   sourceHash: text("source_hash").notNull(),
   version: integer("version").notNull(),
+  // VTT 头部 NOTE 注释解出来的来源信息；SRT/Markdown 没有这类头部，恒为 null。
+  sourceUrl: text("source_url"),
+  sourceTitle: text("source_title"),
+  recordedAt: timestamp("recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

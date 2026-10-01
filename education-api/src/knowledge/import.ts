@@ -9,7 +9,7 @@ import { knowledgeDocuments, knowledgeSegments } from "../db/schema.js";
 import { chunk, type Segment } from "./chunk.js";
 import { parseMarkdown } from "./markdown.js";
 import { parseSrt } from "./srt.js";
-import { parseVtt } from "./vtt.js";
+import { parseVtt, type VttMeta } from "./vtt.js";
 
 export type KnowledgeKind = "srt" | "vtt" | "markdown";
 
@@ -22,10 +22,16 @@ export type ImportResult =
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
-function toSegments(kind: KnowledgeKind, rawContent: string): Segment[] {
-  if (kind === "srt") return chunk(parseSrt(rawContent));
-  if (kind === "vtt") return chunk(parseVtt(rawContent));
-  return chunk(parseMarkdown(rawContent));
+const EMPTY_META: VttMeta = { sourceUrl: null, sourceTitle: null, recordedAt: null };
+
+// 只有 VTT 可能带 NOTE 头部信息；SRT/Markdown 没有这类头部，meta 恒为空。
+function parseContent(kind: KnowledgeKind, rawContent: string): { segments: Segment[]; meta: VttMeta } {
+  if (kind === "srt") return { segments: chunk(parseSrt(rawContent)), meta: EMPTY_META };
+  if (kind === "vtt") {
+    const { cues, meta } = parseVtt(rawContent);
+    return { segments: chunk(cues), meta };
+  }
+  return { segments: chunk(parseMarkdown(rawContent)), meta: EMPTY_META };
 }
 
 /**
@@ -51,12 +57,15 @@ export async function importKnowledgeDocument(
       return { kind: "unchanged", documentId: latest.id, version: latest.version } as const;
     }
 
-    const segments = toSegments(args.kind, args.rawContent);
+    const { segments, meta } = parseContent(args.kind, args.rawContent);
     const version = (latest?.version ?? 0) + 1;
 
     const [document] = await tx
       .insert(knowledgeDocuments)
-      .values({ lessonId: args.lessonId, kind: args.kind, sourceName: args.sourceName, sourceHash, version })
+      .values({
+        lessonId: args.lessonId, kind: args.kind, sourceName: args.sourceName, sourceHash, version,
+        sourceUrl: meta.sourceUrl, sourceTitle: meta.sourceTitle, recordedAt: meta.recordedAt,
+      })
       .returning();
 
     if (segments.length > 0) {

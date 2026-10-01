@@ -7,13 +7,18 @@
 -- content_hash 留给 T-26 判断"新版本里哪些片段内容没变，向量可以直接复用，不用重新跑一遍模型"。
 
 CREATE TABLE knowledge_documents (
-  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  lesson_id   uuid NOT NULL REFERENCES lessons (id),
-  kind        text NOT NULL CHECK (kind IN ('srt', 'vtt', 'markdown')),
-  source_name text NOT NULL,   -- 原始文件名，只为排查用，不参与唯一性
-  source_hash text NOT NULL,   -- 原始文件内容的 sha256，判断"是不是同一份文件又传了一次"
-  version     integer NOT NULL CHECK (version > 0),
-  created_at  timestamptz NOT NULL DEFAULT now(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  lesson_id    uuid NOT NULL REFERENCES lessons (id),
+  kind         text NOT NULL CHECK (kind IN ('srt', 'vtt', 'markdown')),
+  source_name  text NOT NULL,   -- 原始文件名，只为排查用，不参与唯一性
+  source_hash  text NOT NULL,   -- 原始文件内容的 sha256，判断"是不是同一份文件又传了一次"
+  -- VTT 头部 NOTE 注释解出来的来源信息（真实数据里是分享链接/原始标题/录制时间）；
+  -- SRT/Markdown 没有这类头部，这三列恒为 NULL。
+  source_url   text,
+  source_title text,
+  recorded_at  timestamptz,
+  version      integer NOT NULL CHECK (version > 0),
+  created_at   timestamptz NOT NULL DEFAULT now(),
   UNIQUE (lesson_id, version)
 );
 CREATE INDEX knowledge_documents_lesson_latest_idx ON knowledge_documents (lesson_id, version DESC);
