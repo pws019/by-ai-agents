@@ -109,6 +109,21 @@ export const knowledgeDocuments = app.table("knowledge_documents", {
   sourceTitle: text("source_title"),
   recordedAt: timestamp("recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // visibility/activatedAt/revokedAt 是 T-26 加的发布状态：同一 lesson 最多一个 activatedAt
+  // 非空的版本（迁移里的部分唯一索引强制），查询只信这个字段，不信 Qdrant 里物理还有没有点位。
+  visibility: text("visibility").notNull().$type<"public" | "private">().default("private"),
+  activatedAt: timestamp("activated_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+});
+
+export const knowledgeIndexJobs = app.table("knowledge_index_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  documentId: uuid("document_id").notNull(),
+  kind: text("kind").notNull().$type<"index" | "cleanup">(),
+  status: text("status").notNull().$type<"pending" | "running" | "succeeded" | "failed">().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  ...timestamps,
 });
 
 export const knowledgeSegments = app.table("knowledge_segments", {
