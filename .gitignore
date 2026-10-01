@@ -1,3 +1,6 @@
+# macOS metadata
+.DS_Store
+
 # LoRA/QLoRA 训练产物：体积大（单文件常超 GitHub 100MB 限制），不进版本控制
 customer-service-qlora/saves/**/*.safetensors
 customer-service-qlora/saves/**/*.pt
@@ -53,3 +56,6 @@ __pycache__/
 # education-api（TypeScript）：依赖与构建产物
 education-api/node_modules/
 education-api/dist/
+
+# 付费课程转写内容，仅保留在本地
+data/education/private-transcripts/

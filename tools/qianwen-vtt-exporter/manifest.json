@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "千问录音转 VTT",
+  "version": "1.0.0",
+  "description": "从千问录音纪要分享页读取转写和时间戳，并保存为 WebVTT 文件。",
+  "content_scripts": [
+    {
+      "matches": ["https://www.qianwen.com/record*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
