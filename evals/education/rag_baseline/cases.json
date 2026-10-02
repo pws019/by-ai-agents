@@ -1,0 +1,27 @@
+{
+  "note": "合成数据，不是真实课程内容——跟项目其它地方（T-24/T-27 的测试）用的是同一批'冰箱维修培训'风格的示例，不声称这是对真实课程检索效果的评估（见 tasks.md 的风险与停止条件）。",
+  "cases": [
+    {
+      "id": "direct-hit",
+      "description": "AC-013：问题和资料直接相关，应该搜到并引用正确课次",
+      "lessonTitle": "第 3 课：压缩机故障排查",
+      "documentContents": [
+        "冰箱压缩机不启动的常见原因是电源插座接触不良或温控器老化失效。",
+        "检修前务必先断电，用万用表测温控器两端是否导通，导通即正常，不导通需要更换。"
+      ],
+      "query": "压缩机不启动可能是什么原因？",
+      "expectHasEvidence": true,
+      "expectContentContains": "压缩机"
+    },
+    {
+      "id": "no-coverage",
+      "description": "AC-018：题目在已导入资料里完全没有覆盖，应该明确报告无依据，不能编造答案",
+      "lessonTitle": "第 3 课：压缩机故障排查",
+      "documentContents": [
+        "冰箱压缩机不启动的常见原因是电源插座接触不良或温控器老化失效。"
+      ],
+      "query": "量子计算机的基本原理是什么？",
+      "expectHasEvidence": false
+    }
+  ]
+}

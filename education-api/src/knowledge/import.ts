@@ -41,7 +41,7 @@ function parseContent(kind: KnowledgeKind, rawContent: string): { segments: Segm
  */
 export async function importKnowledgeDocument(
   db: Db,
-  args: { lessonId: string; kind: KnowledgeKind; sourceName: string; rawContent: string },
+  args: { lessonId: string; kind: KnowledgeKind; sourceName: string; rawContent: string; visibility?: "public" | "private" },
 ): Promise<ImportResult> {
   const sourceHash = sha256(args.rawContent);
 
@@ -65,6 +65,7 @@ export async function importKnowledgeDocument(
       .values({
         lessonId: args.lessonId, kind: args.kind, sourceName: args.sourceName, sourceHash, version,
         sourceUrl: meta.sourceUrl, sourceTitle: meta.sourceTitle, recordedAt: meta.recordedAt,
+        ...(args.visibility ? { visibility: args.visibility } : {}),
       })
       .returning();
 

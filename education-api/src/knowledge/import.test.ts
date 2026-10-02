@@ -72,6 +72,23 @@ describe("导入字幕/讲义", () => {
     ]);
   });
 
+  test("不传 visibility：按 schema 默认值落为 private；传了就按传的值（T-29 教师维护页面用）", async () => {
+    // 独立的 lesson：这个文件里其它测试按顺序共用 lessonId 并依赖 version 递增序列，混进去会打乱它们的断言。
+    const courseId = await id("INSERT INTO courses (title) VALUES ('可见性测试课程') RETURNING id");
+    const versionId = await id("INSERT INTO course_versions (course_id, version) VALUES ($1,1) RETURNING id", [courseId]);
+    const cohortId = await id("INSERT INTO cohorts (course_id, course_version_id, name, currency, status) VALUES ($1,$2,'班期V','CNY','running') RETURNING id", [courseId, versionId]);
+    const visibilityLesson = await id("INSERT INTO lessons (cohort_id, title, position) VALUES ($1,'可见性课',1) RETURNING id", [cohortId]);
+
+    const defaulted = await importKnowledgeDocument(db, { lessonId: visibilityLesson, kind: "srt", sourceName: "l1.srt", rawContent: SRT });
+    const [defaultedRow] = await db.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.id, (defaulted as { documentId: string }).documentId));
+    assert.equal(defaultedRow!.visibility, "private");
+
+    const changed = SRT.replace("第二句话", "第二句话（公开版）");
+    const publicDoc = await importKnowledgeDocument(db, { lessonId: visibilityLesson, kind: "srt", sourceName: "l1.srt", rawContent: changed, visibility: "public" });
+    const [publicRow] = await db.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.id, (publicDoc as { documentId: string }).documentId));
+    assert.equal(publicRow!.visibility, "public");
+  });
+
   test("内容变了：version 递增到 2，旧版本的 segment 还在（T-26 再决定要不要撤回）", async () => {
     const first = await importKnowledgeDocument(db, { lessonId, kind: "srt", sourceName: "l1.srt", rawContent: SRT });
     const changed = SRT.replace("第二句话", "第二句话（改过）");

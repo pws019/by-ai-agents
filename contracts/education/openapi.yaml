@@ -16,6 +16,7 @@ tags:
   - {name: teacher}
   - {name: chat}
   - {name: replays}
+  - {name: knowledge}
 
 paths:
   /auth/login:
@@ -414,6 +415,20 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/Invalid'}
   /teacher/lessons/{lessonId}:
+    get:
+      tags: [teacher]
+      operationId: teacherGetLesson
+      summary: 核实一个课次 id 存在，返回标题与所属班期（T-29 资料维护页面先核实再导入用）
+      parameters:
+        - {name: lessonId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: 课次与所属班期
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TeacherLessonLookup'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
     patch:
       tags: [teacher]
       operationId: teacherUpdateLesson
@@ -434,6 +449,82 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/Invalid'}
+
+  /teacher/knowledge/documents:
+    get:
+      tags: [knowledge]
+      operationId: listKnowledgeDocuments
+      summary: 某个课次已导入的全部资料版本及各自的发布/索引状态
+      parameters:
+        - {name: lessonId, in: query, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: 版本列表，按 version 倒序
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/KnowledgeDocument'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/Invalid'}
+    post:
+      tags: [knowledge]
+      operationId: importKnowledgeDocument
+      summary: 导入一份新版本字幕/讲义（整份文本，不接受文件上传或 URL 抓取）；内容跟最新版本完全一致则不产生新版本
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/KnowledgeDocumentImportRequest'}
+      responses:
+        '201':
+          description: 已导入为新版本
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeDocumentImportResult'}
+        '200':
+          description: 内容未变，返回已有版本
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeDocumentImportResult'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/Invalid'}
+  /teacher/knowledge/documents/{documentId}/publish:
+    post:
+      tags: [knowledge]
+      operationId: publishKnowledgeDocument
+      summary: 发布（激活）这个版本；原子撤回同一课次此前激活的版本。要求这个版本的索引任务已成功
+      parameters:
+        - {name: documentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: 已发布}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {description: 同一课次正有另一次发布在处理，请重试, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '422': {description: 这个版本的索引任务还没成功, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /teacher/knowledge/documents/{documentId}/withdraw:
+    post:
+      tags: [knowledge]
+      operationId: withdrawKnowledgeDocument
+      summary: 立即撤回（不等物理清理向量）；对没有激活过的版本调用是幂等的 no-op
+      parameters:
+        - {name: documentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: withdrawn 标注这次调用是否真的撤回了什么
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [withdrawn]
+                properties: {withdrawn: {type: boolean}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /teacher/enrollments:
     post:
       tags: [teacher]
@@ -1011,7 +1102,7 @@ components:
               type: string
               enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, VALIDATION_ERROR, INVALID_STATE, REVISION_CONFLICT,
                      STALE_CONFIRMATION, IDEMPOTENCY_KEY_REUSED, RUN_IN_PROGRESS, HANDOFF_ACTIVE,
-                     BUDGET_EXCEEDED, DEPENDENCY_UNAVAILABLE, INTERNAL]
+                     BUDGET_EXCEEDED, DEPENDENCY_UNAVAILABLE, LESSON_BUSY, INTERNAL]
             message: {type: string}
             requestId: {type: string}
             details: {type: object, additionalProperties: true}
@@ -1070,6 +1161,49 @@ components:
         title: {type: string}
         order: {type: integer}
         hasReplay: {type: boolean}
+    TeacherLessonLookup:
+      type: object
+      required: [lessonId, title, cohortId, cohortName]
+      properties:
+        lessonId: {type: string, format: uuid}
+        title: {type: string}
+        cohortId: {type: string, format: uuid}
+        cohortName: {type: string}
+    KnowledgeDocument:
+      type: object
+      required: [documentId, version, kind, sourceName, visibility, activatedAt, revokedAt, createdAt, indexStatus, segmentCount]
+      properties:
+        documentId: {type: string, format: uuid}
+        version: {type: integer}
+        kind: {type: string, enum: [srt, vtt, markdown]}
+        sourceName: {type: string}
+        visibility: {type: string, enum: [public, private]}
+        activatedAt: {type: string, format: date-time, nullable: true}
+        revokedAt: {type: string, format: date-time, nullable: true}
+        createdAt: {type: string, format: date-time}
+        indexStatus:
+          type: string
+          nullable: true
+          enum: [pending, running, succeeded, failed, null]
+          description: null 表示这一版从未登记过索引任务
+        segmentCount: {type: integer}
+    KnowledgeDocumentImportRequest:
+      type: object
+      required: [lessonId, kind, sourceName, rawContent]
+      properties:
+        lessonId: {type: string, format: uuid}
+        kind: {type: string, enum: [srt, vtt, markdown]}
+        sourceName: {type: string, description: 原始文件名，只为排查用}
+        rawContent: {type: string, description: 整份文件的原始文本；不接受文件上传或 URL 抓取}
+        visibility: {type: string, enum: [public, private], description: 不传则按数据库默认值 private}
+    KnowledgeDocumentImportResult:
+      type: object
+      required: [documentId, version, kind]
+      properties:
+        documentId: {type: string, format: uuid}
+        version: {type: integer}
+        kind: {type: string, enum: [imported, unchanged], description: unchanged 表示内容跟已有最新版本完全一致，没有产生新版本}
+        segmentCount: {type: integer, description: 只有 kind=imported 才有这个字段}
     ProgressItem:
       type: object
       required: [lessonId, status, source]

@@ -8,6 +8,7 @@ import { MyApplicationsPage } from "./education/MyApplicationsPage";
 import { MyLearningPage } from "./education/MyLearningPage";
 import { TeacherApplicationsPage } from "./education/TeacherApplicationsPage";
 import { TeacherHandoffsPage } from "./education/TeacherHandoffsPage";
+import { TeacherKnowledgePage } from "./education/TeacherKnowledgePage";
 import { TeacherLayout } from "./education/TeacherLayout";
 import { IndexRoute } from "./routes/IndexRoute";
 import { SessionRoute } from "./routes/SessionRoute";
@@ -54,6 +55,7 @@ export const router = createBrowserRouter([
         children: [
           { path: "teacher", element: <TeacherApplicationsPage /> },
           { path: "teacher/handoffs", element: <TeacherHandoffsPage /> },
+          { path: "teacher/knowledge", element: <TeacherKnowledgePage /> },
         ],
       },
     ],

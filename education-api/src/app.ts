@@ -16,13 +16,21 @@ import { createCatalogRoutes } from "./routes/catalog.js";
 import { createCohortRoutes } from "./routes/cohorts.js";
 import { createMeRoutes } from "./routes/me.js";
 import { createTeacherRoutes } from "./routes/teacher.js";
+import { createTeacherKnowledgeRoutes } from "./routes/teacherKnowledge.js";
 import { createReplayRoutes } from "./replays/routes.js";
+import { createHttpAgentKnowledgeAdminClient, type AgentKnowledgeAdminClient } from "./knowledge/agentAdminClient.js";
 
 const API_PREFIX = "/api/v1";
 
 export function createApp(
   pool: pg.Pool,
-  opts?: { allowedOrigin?: string; internalAuthSecret?: string; agent?: AgentClient; heartbeatIntervalMs?: number },
+  opts?: {
+    allowedOrigin?: string;
+    internalAuthSecret?: string;
+    agent?: AgentClient;
+    agentAdmin?: AgentKnowledgeAdminClient;
+    heartbeatIntervalMs?: number;
+  },
 ): Hono {
   const app = new Hono();
   const allowedOrigin = opts?.allowedOrigin ?? process.env.ALLOWED_ORIGIN ?? "http://localhost:5173";
@@ -30,6 +38,7 @@ export function createApp(
   const db = createDb(pool);
   const agentBaseUrl = process.env.AGENT_BASE_URL;
   const agent = opts?.agent ?? (agentBaseUrl ? createHttpAgentClient(agentBaseUrl) : undefined);
+  const agentAdmin = opts?.agentAdmin ?? (agentBaseUrl ? createHttpAgentKnowledgeAdminClient(agentBaseUrl) : undefined);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -53,6 +62,7 @@ export function createApp(
   api.route("/", createMeRoutes(db));
   api.route("/", createReplayRoutes(db));
   api.route("/", createTeacherRoutes(db));
+  api.route("/", createTeacherKnowledgeRoutes(db, { internalSecret: internalAuthSecret, agentAdmin }));
 
   app.route(API_PREFIX, api);
   return app;

@@ -86,7 +86,7 @@ async def serve(settings: Settings) -> None:
     async with httpx.AsyncClient(base_url=settings.business_api_url) as http, open_checkpointer() as saver:
         graph = build_student_graph(build_model(settings), ToolRuntime(specs, http), saver)
         config = uvicorn.Config(
-            create_app(graph, settings.internal_secret, checkpoint_dsn=DATABASE_URL),
+            create_app(graph, settings.internal_secret, checkpoint_dsn=DATABASE_URL, knowledge_dsn=DATABASE_URL),
             host=settings.host, port=settings.port, log_level="info",
         )
         await uvicorn.Server(config).serve()

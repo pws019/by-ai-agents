@@ -10,6 +10,7 @@ import { useAuth } from "./AuthContext";
 const NAV_ITEMS = [
   { to: "/teacher", icon: "assignment", label: "申请审批" },
   { to: "/teacher/handoffs", icon: "support_agent", label: "会话工作台" },
+  { to: "/teacher/knowledge", icon: "menu_book", label: "资料维护" },
 ] as const;
 
 export function TeacherLayout() {
@@ -26,7 +27,7 @@ export function TeacherLayout() {
           </div>
           <div>
             <h1 className="text-headline-sm font-bold text-primary leading-tight">老师工作台</h1>
-            <p className="text-label-sm text-secondary">申请 · 会话</p>
+            <p className="text-label-sm text-secondary">申请 · 会话 · 资料</p>
           </div>
         </div>
 

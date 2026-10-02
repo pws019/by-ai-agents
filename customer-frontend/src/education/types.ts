@@ -141,3 +141,25 @@ export type ConversationMessage = {
   runId: string | null;
   createdAt: string;
 };
+
+// 资料维护（T-29）。knowledge_segments.content_hash/start_ms 等字段不在这里暴露——老师维护页面
+// 只需要知道"这一版发没发布、索引到哪一步了"，不需要逐条片段的内容（那是检索结果要展示的东西）。
+export type TeacherLessonLookup = { lessonId: string; title: string; cohortId: string; cohortName: string };
+
+export type KnowledgeKind = "srt" | "vtt" | "markdown";
+export type IndexStatus = "pending" | "running" | "succeeded" | "failed" | null;
+
+export type KnowledgeDocument = {
+  documentId: string;
+  version: number;
+  kind: KnowledgeKind;
+  sourceName: string;
+  visibility: "public" | "private";
+  activatedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+  indexStatus: IndexStatus;
+  segmentCount: number;
+};
+
+export type KnowledgeDocumentImportResult = { documentId: string; version: number; kind: "imported" | "unchanged"; segmentCount?: number };

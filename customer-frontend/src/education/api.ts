@@ -12,9 +12,13 @@ import type {
   CurrentUser,
   Enrollment,
   Handoff,
+  KnowledgeDocument,
+  KnowledgeDocumentImportResult,
+  KnowledgeKind,
   ProgressItem,
   ReplayAccess,
   ScheduleItem,
+  TeacherLessonLookup,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -143,3 +147,19 @@ export const getTeacherConversationMessages = (conversationId: string, after?: s
 
 export const teacherSendChatMessage = (conversationId: string, body: { clientMessageId: string; text: string }) =>
   request<ConversationMessage>(`/teacher/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify(body) });
+
+// --- 资料维护（T-29）---
+
+export const teacherGetLesson = (lessonId: string) => request<TeacherLessonLookup>(`/teacher/lessons/${lessonId}`);
+
+export const listKnowledgeDocuments = (lessonId: string) =>
+  request<{ items: KnowledgeDocument[] }>(`/teacher/knowledge/documents?lessonId=${lessonId}`);
+
+export const importKnowledgeDocument = (body: { lessonId: string; kind: KnowledgeKind; sourceName: string; rawContent: string; visibility?: "public" | "private" }) =>
+  request<KnowledgeDocumentImportResult>("/teacher/knowledge/documents", { method: "POST", body: JSON.stringify(body) });
+
+export const publishKnowledgeDocument = (documentId: string) =>
+  request<void>(`/teacher/knowledge/documents/${documentId}/publish`, { method: "POST" });
+
+export const withdrawKnowledgeDocument = (documentId: string) =>
+  request<{ withdrawn: boolean }>(`/teacher/knowledge/documents/${documentId}/withdraw`, { method: "POST" });

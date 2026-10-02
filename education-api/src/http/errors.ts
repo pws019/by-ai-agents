@@ -15,6 +15,7 @@ export type ErrorCode =
   | "HANDOFF_ACTIVE"
   | "BUDGET_EXCEEDED"
   | "DEPENDENCY_UNAVAILABLE"
+  | "LESSON_BUSY"
   | "INTERNAL";
 
 export function errorJson(c: Context, status: ContentfulStatusCode, code: ErrorCode, message: string) {
