@@ -16,6 +16,7 @@ import { createCatalogRoutes } from "./routes/catalog.js";
 import { createCohortRoutes } from "./routes/cohorts.js";
 import { createMeRoutes } from "./routes/me.js";
 import { createTeacherRoutes } from "./routes/teacher.js";
+import { createReplayRoutes } from "./replays/routes.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -50,6 +51,7 @@ export function createApp(
   api.route("/", createConversationRoutes(db, { agent, internalSecret: internalAuthSecret, heartbeatIntervalMs: opts?.heartbeatIntervalMs }));
   api.route("/", createHandoffRoutes(db));
   api.route("/", createMeRoutes(db));
+  api.route("/", createReplayRoutes(db));
   api.route("/", createTeacherRoutes(db));
 
   app.route(API_PREFIX, api);

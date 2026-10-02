@@ -33,6 +33,17 @@ export type ScheduleItem = {
   hasReplay: boolean;
 };
 
+// GET /replays/:segmentId/access（T-28）：每次打开回放卡片都要重新请求，不缓存，
+// 因为这个接口本身就是"播放前再鉴权"那一关，不是检索时判断过一次就永久当作有权限。
+// synthetic 恒为 true——项目里没有真实回放素材，界面必须照实标注，不能让人以为在看真实录像。
+export type ReplayAccess = {
+  segmentId: string;
+  playbackUrl: string;
+  startSeconds: number;
+  endSeconds: number;
+  synthetic: true;
+};
+
 export type ProgressStatus = "not_started" | "in_progress" | "completed";
 
 export type ProgressItem = {

@@ -13,6 +13,7 @@ import type {
   Enrollment,
   Handoff,
   ProgressItem,
+  ReplayAccess,
   ScheduleItem,
 } from "./types";
 
@@ -59,6 +60,10 @@ export const getMyProgress = (enrollmentId: string) =>
 
 export const getTransferTargets = (enrollmentId: string) =>
   request<{ items: CohortSummary[] }>(`/cohorts/transfer-targets?enrollmentId=${enrollmentId}`);
+
+// --- 受控回放入口（T-28）---
+
+export const getReplayAccess = (segmentId: string) => request<ReplayAccess>(`/replays/${segmentId}/access`);
 
 // --- 申请（转班/退费），T-16 ---
 
