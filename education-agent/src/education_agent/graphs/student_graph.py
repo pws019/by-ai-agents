@@ -51,7 +51,10 @@ from .handoff import (
 )
 from .loop import run_tool_loop
 
-QUERY_TOOLS = {"getCurrentOffering", "getMyEnrollment", "getMySchedule", "getMyProgress", "getTransferTargets", "getApplicationStatus"}
+QUERY_TOOLS = {
+    "getCurrentOffering", "getMyEnrollment", "getMySchedule", "getMyProgress", "getTransferTargets",
+    "getApplicationStatus", "searchKnowledge",
+}
 APPLICATION_TOOLS = {"getMyEnrollment", "getTransferTargets", "prepareApplication", "getApplicationStatus"}
 
 BRANCHES = ("query", "application", "handoff")

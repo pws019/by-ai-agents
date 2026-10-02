@@ -13,7 +13,7 @@ IDENTITY_FIELDS = {"studentid", "actorid", "userid", "user", "student", "role", 
 def test_tool_names_are_the_designed_allowlist():
     assert {s.name for s in TOOL_SPECS} == {
         "getCurrentOffering", "getMyEnrollment", "getMySchedule", "getMyProgress",
-        "getTransferTargets", "prepareApplication", "getApplicationStatus",
+        "getTransferTargets", "prepareApplication", "getApplicationStatus", "searchKnowledge",
     }
 
 

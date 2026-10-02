@@ -54,7 +54,7 @@
 
 - [x] T-25（3h）SRT/VTT/Markdown 导入、分片、稳定 ID 和来源版本。`education-api/src/knowledge/`、`data/education/transcripts/`。验收：时间戳解析正确，讲义不虚构时间。
 - [x] T-26（3h）索引任务、发布激活、撤回/删除与失败重跑。`education-agent/src/ingestion/`。验收：AC-016，旧版本即使未物理清除也不能返回。
-- [ ] T-27（3h）权限过滤 RAG、引用及无依据处理，服务端限制候选数。`education-agent/src/retrieval/`。验收：AC-013/015/018。
+- [x] T-27（3h）权限过滤 RAG、引用及无依据处理，服务端限制候选数。`education-agent/src/retrieval/`。验收：AC-013/015/018。
 - [ ] T-28（3h）受控回放入口、引用与回放卡片。`education-api/src/replays/`、`customer-frontend/src/components/`。验收：播放访问再鉴权，合成演示资源明确标注。
 - [ ] T-29（3h）资料维护页面、发布状态和 RAG 基线评估。`customer-frontend/src/routes/`、`evals/education/`。验收：更新资料后新答案可追溯版本，记录基线。
 

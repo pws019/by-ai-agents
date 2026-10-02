@@ -84,6 +84,21 @@ async def fetch_document(dsn: str, document_id: str) -> Document | None:
         return None if row is None else Document(row.id, row.lesson_id, row.version, row.visibility, row.activated_at)
 
 
+async def fetch_documents(dsn: str, document_ids: list[str]) -> dict[str, Document]:
+    """批量版的 fetch_document，按 id 查询一批（T-27 的检索候选去重后一次性核验，不是
+    一条候选发一次请求）。返回字典只包含真的存在的 id；不存在的 id 直接从结果里缺席。"""
+    if not document_ids:
+        return {}
+    async with _connect(dsn) as conn:
+        rows = (await conn.execute(
+            select(
+                knowledge_documents.c.id, knowledge_documents.c.lesson_id, knowledge_documents.c.version,
+                knowledge_documents.c.visibility, knowledge_documents.c.activated_at,
+            ).where(knowledge_documents.c.id.in_(document_ids))
+        )).all()
+        return {r.id: Document(r.id, r.lesson_id, r.version, r.visibility, r.activated_at) for r in rows}
+
+
 async def fetch_segments(dsn: str, document_id: str) -> list[Segment]:
     async with _connect(dsn) as conn:
         rows = (await conn.execute(

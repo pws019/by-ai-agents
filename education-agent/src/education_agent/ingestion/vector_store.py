@@ -24,6 +24,23 @@ class SegmentPoint:
     end_ms: int | None
 
 
+@dataclass(frozen=True)
+class ScoredSegment:
+    """search() 的一条结果：payload 字段原样取出，score 是向量相似度（不是业务可信度——
+    还没经过 T-27 的业务 activeVersion 再核验，调用方不能直接把它当最终引用用）。"""
+
+    segment_id: str
+    score: float
+    document_id: str
+    document_version: int
+    lesson_id: str
+    cohort_id: str
+    visibility: str
+    content: str
+    start_ms: int | None
+    end_ms: int | None
+
+
 class DimensionMismatch(Exception):
     """同名 collection 之前用了维度不同的 embedding 模型建的（比如换了模型没改 collection 名字）。
     不处理、不新建：collection 名字被另一个维度的数据占着，这是需要人介入决定的事，不是程序能
@@ -97,6 +114,27 @@ class VectorStore:
                 filter=models.Filter(must=[models.FieldCondition(key="sourceId", match=models.MatchValue(value=document_id))])
             ),
         )
+
+    async def search(
+        self, vector: list[float], *, limit: int, score_threshold: float, query_filter: models.Filter
+    ) -> list[ScoredSegment]:
+        """`query_filter` 必须由调用方显式构造，这里不提供"不传就查全部"的默认值——
+        design.md §6 的要求是"查询范围必须显式生成，空权限不能退化为查询所有数据"，
+        把这个参数设成必填就是把这条规则在类型层面钉住，调用方没法图省事漏传。
+        """
+        result = await self._client.query_points(
+            self._collection, query=vector, query_filter=query_filter,
+            limit=limit, score_threshold=score_threshold, with_payload=True,
+        )
+        return [
+            ScoredSegment(
+                segment_id=str(p.id), score=p.score, document_id=p.payload["sourceId"],
+                document_version=p.payload["sourceVersion"], lesson_id=p.payload["lessonId"],
+                cohort_id=p.payload["cohortId"], visibility=p.payload["visibility"],
+                content=p.payload["content"], start_ms=p.payload["startMs"], end_ms=p.payload["endMs"],
+            )
+            for p in result.points
+        ]
 
     async def fetch_vectors(self, segment_ids: list[str]) -> dict[str, list[float]]:
         """按 segment id 批量取回已存在的向量；不存在的 id 不会出现在返回的字典里（不报错）。

@@ -12,15 +12,18 @@ from dataclasses import dataclass
 
 import httpx
 import uvicorn
+from qdrant_client import AsyncQdrantClient
 
 from .checkpoint import open_checkpointer
-from .config import DATABASE_URL
+from .config import DATABASE_URL, KNOWLEDGE_COLLECTION, QDRANT_URL
 from .dev_model import DemoModel
 from .graphs.student_graph import build_student_graph
+from .ingestion.vector_store import VectorStore
+from .ingestion.worker import build_embedder
 from .model.base import ChatModel
 from .model.langchain_adapter import create_langchain_model
 from .server import create_app
-from .tools.contracts import TOOL_SPECS
+from .tools.contracts import TOOL_SPECS, build_search_knowledge_spec
 from .tools.runtime import ToolRuntime
 
 
@@ -75,8 +78,13 @@ def build_model(settings: Settings) -> ChatModel:
 
 
 async def serve(settings: Settings) -> None:
+    embedder = build_embedder(os.environ)
+    store = VectorStore(AsyncQdrantClient(url=QDRANT_URL), KNOWLEDGE_COLLECTION, embedder.dimension)
+    await store.ensure_collection()
+    specs = TOOL_SPECS + (build_search_knowledge_spec(embedder, store, DATABASE_URL),)
+
     async with httpx.AsyncClient(base_url=settings.business_api_url) as http, open_checkpointer() as saver:
-        graph = build_student_graph(build_model(settings), ToolRuntime(TOOL_SPECS, http), saver)
+        graph = build_student_graph(build_model(settings), ToolRuntime(specs, http), saver)
         config = uvicorn.Config(
             create_app(graph, settings.internal_secret, checkpoint_dsn=DATABASE_URL),
             host=settings.host, port=settings.port, log_level="info",
