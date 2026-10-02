@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../../lib/chat/state";
+import { ReplayCard } from "../replay/ReplayCard";
 import { Icon } from "../ui/Icon";
 import { ToolStatusChip } from "./ToolStatusChip";
 
@@ -44,6 +45,18 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
               }`}
             >
               <p className="text-body-md leading-relaxed">{message.content}</p>
+            </div>
+          )}
+          {message.citations.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {message.citations.map((c, i) => (
+                <div key={i} className="flex items-center gap-2 flex-wrap text-label-sm text-on-surface-variant">
+                  <Icon name="menu_book" className="text-[16px]" />
+                  <span>引用：{c.title}</span>
+                  {/* 讲义没有时间轴时 segmentId/startSeconds/endSeconds 是 null：只是一条文字引用，没有回放入口。 */}
+                  {c.segmentId && c.startSeconds !== null && c.endSeconds !== null && <ReplayCard segmentId={c.segmentId} title={c.title} />}
+                </div>
+              ))}
             </div>
           )}
           {failed && (

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { StreamProtocolError } from "./events";
 import { readEvents } from "./sse";
-import { collect, completed, delta, ev, sseText, streamOf } from "./testing";
+import { citation, collect, completed, delta, replayCard, sseText, streamOf } from "./testing";
 
 const encode = (s: string) => new TextEncoder().encode(s);
 
@@ -48,9 +48,20 @@ describe("SSE 解析", () => {
     await assert.rejects(collect(readEvents(streamOf(encode(sseText([{ type: "message.delta" }])), []))), StreamProtocolError);
   });
 
-  test("契约里有、界面暂不展示的类型归为 other，不当作错误", async () => {
-    const got = await collect(readEvents(streamOf(encode(sseText([ev("message.delta", { text: "x" }), { ...delta("x"), type: "citation", payload: { sourceId: "s" } }])), [])));
-    assert.equal(got[1]!.type, "other");
+  test("citation 事件：解析出完整的引用元数据（T-28）", async () => {
+    const sent = citation();
+    const got = await collect(readEvents(streamOf(encode(sseText([sent])), [])));
+    assert.deepEqual(got[0], sent);
+  });
+
+  test("citation 载荷缺字段（比如不是完整的 sourceId/sourceVersion/title）：抛协议错误", async () => {
+    await assert.rejects(collect(readEvents(streamOf(encode(sseText([{ ...delta("x"), type: "citation", payload: { sourceId: "s" } }])), []))), StreamProtocolError);
+  });
+
+  test("replay.card 事件：解析出可以直接播放的回放卡片元数据", async () => {
+    const sent = replayCard();
+    const got = await collect(readEvents(streamOf(encode(sseText([sent])), [])));
+    assert.deepEqual(got[0], sent);
   });
 
   test("调用方提前停止读取：释放底层连接（reader.cancel）", async () => {

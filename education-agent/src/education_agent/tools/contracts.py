@@ -138,12 +138,32 @@ def build_search_knowledge_spec(embedder: Embedder, store: VectorStore, dsn: str
         if not result.has_evidence:
             # AC-018：没搜到就明确说没搜到，不把这件事交给模型自由发挥去编一个。
             return ToolOutput({"found": False, "citations": []})
-        return ToolOutput({
-            "found": True,
-            "citations": [
-                {"lessonId": c.lesson_id, "text": c.content, "startMs": c.start_ms, "endMs": c.end_ms}
-                for c in result.citations
-            ],
-        })
+        return ToolOutput(
+            data={
+                "found": True,
+                "citations": [
+                    {"lessonId": c.lesson_id, "lessonTitle": c.lesson_title, "text": c.content, "startMs": c.start_ms, "endMs": c.end_ms}
+                    for c in result.citations
+                ],
+            },
+            # T-28：citation/replay.card 事件只给 UI，不给模型——跟确认卡同一个理由，model_view()
+            # 不包含 artifacts，模型看不到 sourceId/segmentId 这些事件专用字段，省得它复述出来当成
+            # 可以编造播放地址的依据。字段集合精确等于 contracts/education/events.schema.json 的
+            # citation payload（additionalProperties: false，多一个少一个键都会在事件校验里炸）；
+            # 讲义没有时间轴时 startSeconds/endSeconds 必须是 null，不能编一个 0。
+            artifacts={
+                "citations": [
+                    {
+                        "sourceId": c.source_id,
+                        "sourceVersion": c.source_version,
+                        "title": c.lesson_title,
+                        "segmentId": c.segment_id,
+                        "startSeconds": None if c.start_ms is None else c.start_ms / 1000,
+                        "endSeconds": None if c.end_ms is None else c.end_ms / 1000,
+                    }
+                    for c in result.citations
+                ],
+            },
+        )
 
     return ToolSpec("searchKnowledge", _SEARCH_KNOWLEDGE_DESCRIPTION, SearchKnowledgeArgs, _search_knowledge)

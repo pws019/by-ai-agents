@@ -72,6 +72,12 @@ async def test_search_returns_citation_with_real_time_position_for_my_active_coh
     assert citation.lesson_id == lesson_id
     assert "压缩机" in citation.content
     assert (citation.start_ms, citation.end_ms) == (12000, 18000)
+    # T-28 的 citation/replay.card 事件要用到的字段：source_id/source_version 对应 document，
+    # segment_id 对应这一条具体片段，lesson_title 是 _insert_lesson 固定建出来的"第一课"。
+    assert citation.source_id == doc_id
+    assert citation.source_version == 1
+    assert citation.lesson_title == "第一课"
+    assert citation.segment_id
 
 
 async def test_search_does_not_return_private_content_from_a_cohort_i_am_not_enrolled_in(dsn, store, embedder):
@@ -130,3 +136,37 @@ async def test_candidate_count_is_capped_server_side_regardless_of_how_much_matc
 
     assert result.has_evidence
     assert len(result.citations) <= TOP_K
+
+
+async def test_search_knowledge_tool_puts_citations_in_artifacts_shaped_exactly_like_the_sse_event(dsn, store, embedder):
+    """T-28：searchKnowledge 工具的 artifacts["citations"] 要跟
+    contracts/education/events.schema.json 的 citation payload 完全一致（sourceId/sourceVersion/
+    title/segmentId/startSeconds/endSeconds，additionalProperties:false，多一个少一个键都不行）——
+    这是 graphs/loop.py 直接 `emit({"type": "citation", **citation})` 的前提。
+    """
+    from education_agent.tools.contracts import SearchKnowledgeArgs, build_search_knowledge_spec
+
+    lesson_id, cohort_id = await _insert_lesson(dsn)
+    doc_id = await _insert_document(dsn, lesson_id, 1, ["冰箱压缩机不启动的常见原因是电源或温控器故障"])
+    async with await psycopg.AsyncConnection.connect(dsn) as conn, conn.cursor() as cur:
+        await cur.execute("UPDATE app.knowledge_segments SET start_ms = 12000, end_ms = 18000 WHERE document_id = %s", (doc_id,))
+        await conn.commit()
+    await db.enqueue_job(dsn, doc_id, "index")
+    outcomes = await run_pending_jobs(dsn, store, embedder)
+    assert all(o.ok for o in outcomes), outcomes
+    await db.activate_document(dsn, doc_id)
+
+    spec = build_search_knowledge_spec(embedder, store, dsn)
+    output = await spec.handler(_api([_enrollment(cohort_id)]), SearchKnowledgeArgs(query="压缩机不启动怎么办"))
+
+    assert output.data["found"] is True
+    [citation] = output.artifacts["citations"]
+    assert citation == {
+        "sourceId": doc_id,
+        "sourceVersion": 1,
+        "title": "第一课",
+        "segmentId": citation["segmentId"],  # 只断言存在且是唯一一条，不是具体值（UUID 随机生成）
+        "startSeconds": 12.0,
+        "endSeconds": 18.0,
+    }
+    assert set(citation.keys()) == {"sourceId", "sourceVersion", "title", "segmentId", "startSeconds", "endSeconds"}

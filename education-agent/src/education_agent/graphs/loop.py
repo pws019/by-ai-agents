@@ -11,6 +11,10 @@
 - 事件只是"边跑边通知"：emit 给了就发 message.delta（模型正在生成的文本）和 tool.status（载荷 {tool, status}，只有工具名和状态，
   不含参数、结果、错误细节——脱敏），不给就静默。发不发事件不影响循环的任何行为和返回值。
 - 一出现确认卡就立刻停下，不再让模型继续说话或继续调用：模型的产出止于"草稿"（AC-004）。
+- T-28：工具结果的 artifacts 里如果有 "citations"（目前只有 searchKnowledge 会放），逐条发
+  citation 事件；其中带着完整时间范围的（segmentId/startSeconds/endSeconds 都不是 None——
+  讲义没有时间轴的片段没有），额外发一条 replay.card，方便前端不用等用户点开引用就能直接看到
+  "可以看回放"的卡片。这跟确认卡不一样：发了不停循环，模型继续往下说话/调用。
 """
 import json
 from collections.abc import Callable
@@ -77,6 +81,17 @@ async def run_tool_loop(
             result = await tools.call(call.name, call.args, ctx, budget)
             emit({"type": "tool.status", "tool": call.name, "status": "succeeded" if result.ok else "failed"})
             add(_tool_message(call.id, result.model_view()))  # model_view：确认卡与错误细节都不在里面
+
+            for citation in result.artifacts.get("citations", []):
+                emit({"type": "citation", **citation})
+                if citation["segmentId"] is not None and citation["startSeconds"] is not None and citation["endSeconds"] is not None:
+                    emit({
+                        "type": "replay.card",
+                        "segmentId": citation["segmentId"],
+                        "lessonTitle": citation["title"],
+                        "startSeconds": citation["startSeconds"],
+                        "endSeconds": citation["endSeconds"],
+                    })
 
             if "confirmation" in result.artifacts:
                 confirmation = result.artifacts["confirmation"]

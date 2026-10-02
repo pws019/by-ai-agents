@@ -118,6 +118,18 @@ async def fetch_lesson_cohort_id(dsn: str, lesson_id: str) -> str:
         return row.cohort_id
 
 
+async def fetch_lesson_titles(dsn: str, lesson_ids: list[str]) -> dict[str, str]:
+    """批量取课次标题，供 T-28 的 citation/replay.card 事件用（两个事件payload都要带人能看懂的
+    课次名字，不是只有 lessonId）。返回字典只包含真的存在的 id，用法跟 fetch_documents 一致。"""
+    if not lesson_ids:
+        return {}
+    async with _connect(dsn) as conn:
+        rows = (await conn.execute(
+            select(lessons.c.id, lessons.c.title).where(lessons.c.id.in_(lesson_ids))
+        )).all()
+        return {r.id: r.title for r in rows}
+
+
 async def fetch_previous_indexed_document(dsn: str, lesson_id: str, exclude_document_id: str) -> Document | None:
     """同一 lesson 里，version 比当前小、且索引任务已经成功过的最近一个版本——供"内容没变就复用
     旧向量"用。不要求它是当前 activated 的那个：同一个版本可能先建完索引、还没被激活就又导入了

@@ -1,6 +1,6 @@
 // 聊天界面的状态与"事件 → 状态"的纯函数。没有任何副作用、不依赖 React，所以可以直接单元测试。
 // 界面拿到的永远是新的状态对象（不原地修改），React 才能可靠地感知变化。
-import type { ConfirmationCard, ConversationMode, StreamEvent, ToolStatusValue } from "./events";
+import type { CitationPayload, ConfirmationCard, ConversationMode, StreamEvent, ToolStatusValue } from "./events";
 
 export interface ToolStatus {
   tool: string;
@@ -12,6 +12,9 @@ export interface ChatMessage {
   role: "user" | "assistant" | "teacher" | "system";
   content: string;
   tools: ToolStatus[];
+  // searchKnowledge 命中时服务端发的引用（T-28）；有 segmentId 且 startSeconds/endSeconds 都不是
+  // null 的才能渲染回放卡片——讲义没有时间轴，只是一条文字引用，没有可以跳转播放的位置。
+  citations: CitationPayload[];
   // streaming：还在生成；done：完整；error：这次运行失败了（content 是已收到的部分文字，error 是原因）
   state: "streaming" | "done" | "error";
   error?: string;
@@ -45,8 +48,8 @@ export function startTurn(state: ChatState, clientMessageId: string, text: strin
     notice: null,
     messages: [
       ...state.messages,
-      { id: clientMessageId, role: "user", content: text, tools: [], state: "done" },
-      { id: `pending-${clientMessageId}`, role: "assistant", content: "", tools: [], state: "streaming" },
+      { id: clientMessageId, role: "user", content: text, tools: [], citations: [], state: "done" },
+      { id: `pending-${clientMessageId}`, role: "assistant", content: "", tools: [], citations: [], state: "streaming" },
     ],
   };
 }
@@ -57,7 +60,7 @@ export function startResume(state: ChatState): ChatState {
     ...state,
     phase: "streaming",
     notice: null,
-    messages: [...state.messages, { id: `pending-resume-${state.messages.length}`, role: "assistant", content: "", tools: [], state: "streaming" }],
+    messages: [...state.messages, { id: `pending-resume-${state.messages.length}`, role: "assistant", content: "", tools: [], citations: [], state: "streaming" }],
   };
 }
 
@@ -67,6 +70,13 @@ export function applyEvent(state: ChatState, event: StreamEvent): ChatState {
       return updateAssistant(state, (m) => ({ ...m, content: m.content + event.payload.text }));
     case "tool.status":
       return updateAssistant(state, (m) => ({ ...m, tools: applyToolStatus(m.tools, event.payload.tool, event.payload.status) }));
+    case "citation":
+      return updateAssistant(state, (m) => ({ ...m, citations: [...m.citations, event.payload] }));
+    case "replay.card":
+      // 不单独存：总是跟在一条带完整时间范围的 citation 后面发出（见 education-agent 的
+      // graphs/loop.py），界面直接用那条 citation 的 segmentId/startSeconds/endSeconds 渲染
+      // 回放卡片，这个事件目前只是同一份信息的子集，不重复维护一份状态。
+      return state;
     case "application.confirmation":
       return { ...state, pendingConfirmation: event.payload };
     case "message.completed":
@@ -87,8 +97,6 @@ export function applyEvent(state: ChatState, event: StreamEvent): ChatState {
         phase: "idle",
         messages: state.messages.filter((m) => !(m.role === "assistant" && m.state === "streaming" && m.content === "")),
       };
-    case "other":
-      return state;
   }
 }
 
@@ -118,7 +126,7 @@ export function fromServer(
   keep?: Pick<ChatState, "notice">,
 ): ChatState {
   return {
-    messages: messages.map((m) => ({ id: m.id, role: m.role, content: m.content, tools: [], state: "done" as const })),
+    messages: messages.map((m) => ({ id: m.id, role: m.role, content: m.content, tools: [], citations: [], state: "done" as const })),
     pendingConfirmation,
     mode,
     phase: "idle",
@@ -138,7 +146,7 @@ export function appendServer(state: ChatState, items: ServerMessage[], pendingCo
   if (items.length === 0) return { ...state, pendingConfirmation, mode };
   return {
     ...state,
-    messages: [...state.messages, ...items.map((m) => ({ id: m.id, role: m.role, content: m.content, tools: [] as ToolStatus[], state: "done" as const }))],
+    messages: [...state.messages, ...items.map((m) => ({ id: m.id, role: m.role, content: m.content, tools: [] as ToolStatus[], citations: [] as CitationPayload[], state: "done" as const }))],
     pendingConfirmation,
     mode,
     phase: "idle",
@@ -158,7 +166,7 @@ function updateAssistant(state: ChatState, update: (m: ChatMessage) => ChatMessa
   if (last && last.role === "assistant" && last.state === "streaming") {
     return { ...state, messages: [...state.messages.slice(0, -1), update(last)] };
   }
-  const fresh: ChatMessage = { id: `pending-${state.messages.length}`, role: "assistant", content: "", tools: [], state: "streaming" };
+  const fresh: ChatMessage = { id: `pending-${state.messages.length}`, role: "assistant", content: "", tools: [], citations: [], state: "streaming" };
   return { ...state, messages: [...state.messages, update(fresh)] };
 }
 

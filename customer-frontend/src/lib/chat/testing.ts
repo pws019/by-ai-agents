@@ -1,6 +1,6 @@
 // 测试辅助（不属于运行时代码）：构造事件、把文本变成可被任意切碎的字节流、假的 ChatApi。
 import { ApiError } from "../../education/api";
-import type { ConfirmationCard, StreamEvent } from "./events";
+import type { CitationPayload, ConfirmationCard, ReplayCardPayload, StreamEvent } from "./events";
 import type { ChatApi, MessagesResponse, RunView } from "./session";
 
 export const CONV = "c-1";
@@ -14,6 +14,10 @@ export const delta = (text: string) => ev("message.delta", { text });
 export const completed = (text: string, messageId = "m-assistant") => ev("message.completed", { messageId, text });
 export const tool = (name: string, status: "started" | "succeeded" | "failed") => ev("tool.status", { tool: name, status });
 export const handoffStatus = (mode: "bot" | "queued" | "human" | "closed") => ev("handoff.status", { mode });
+export const citation = (over: Partial<CitationPayload> = {}) =>
+  ev("citation", { sourceId: "doc-1", sourceVersion: 1, title: "第一课", segmentId: "seg-1", startSeconds: 12, endSeconds: 18, ...over });
+export const replayCard = (over: Partial<ReplayCardPayload> = {}) =>
+  ev("replay.card", { segmentId: "seg-1", lessonTitle: "第一课", startSeconds: 12, endSeconds: 18, ...over });
 
 export const sseText = (events: unknown[]): string => events.map((e, i) => `id: ${i + 1}\nevent: x\ndata: ${JSON.stringify(e)}\n\n`).join("");
 

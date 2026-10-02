@@ -23,6 +23,7 @@ lessons = Table(
     "lessons", metadata,
     Column("id", UuidStr, primary_key=True),
     Column("cohort_id", UuidStr, nullable=False),
+    Column("title", Text, nullable=False),
 )
 
 knowledge_documents = Table(

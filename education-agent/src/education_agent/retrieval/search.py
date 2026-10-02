@@ -11,6 +11,10 @@ design.md §6 三句话对应这里的三个步骤：
 
 AC-018 要的"无依据不编造"落在 `SearchResult.has_evidence`：score_threshold 过滤 + 权限过滤 +
 业务再核验三关都可能让候选清空，清空就是清空，不拿不相关的片段凑数。
+
+T-28：`Citation` 多带 source_id/source_version/segment_id/lesson_title，是给 `tools/contracts.py`
+组装 citation/replay.card SSE 事件用的，这里只负责把字段准备齐，不负责怎么发事件
+（事件怎么从工具结果变成 SSE 帧是 `graphs/loop.py` 的事）。
 """
 from dataclasses import dataclass
 
@@ -32,7 +36,16 @@ MIN_SCORE = 0.5
 
 @dataclass(frozen=True)
 class Citation:
+    """字段集合覆盖两个用途：给模型读的文本（lesson_id/content），以及 T-28 的 citation/replay.card
+    SSE 事件要求的引用元数据（source_id/source_version/segment_id/lesson_title）——
+    events.schema.json 的 citation payload 就是 {sourceId, sourceVersion, title, segmentId,
+    startSeconds, endSeconds}，这里按同样的字段准备好，contracts.py 组装成 payload 时不用再回查。"""
+
+    source_id: str  # knowledge_documents.id
+    source_version: int
     lesson_id: str
+    lesson_title: str
+    segment_id: str
     content: str
     start_ms: int | None
     end_ms: int | None
@@ -75,4 +88,12 @@ async def search_knowledge(
     )
     hits = await _verify_still_active(dsn, hits)
 
-    return SearchResult(tuple(Citation(h.lesson_id, h.content, h.start_ms, h.end_ms) for h in hits))
+    titles = await ingestion_db.fetch_lesson_titles(dsn, list({h.lesson_id for h in hits}))
+    return SearchResult(tuple(
+        Citation(
+            source_id=h.document_id, source_version=h.document_version, lesson_id=h.lesson_id,
+            lesson_title=titles.get(h.lesson_id, ""), segment_id=h.segment_id,
+            content=h.content, start_ms=h.start_ms, end_ms=h.end_ms,
+        )
+        for h in hits
+    ))

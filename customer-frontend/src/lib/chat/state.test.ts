@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { CARD, completed, delta, ev, handoffStatus, tool } from "./testing";
+import { CARD, citation, completed, delta, ev, handoffStatus, replayCard, tool } from "./testing";
 import { appendServer, applyEvent, clearConfirmation, emptyChat, failTurn, fromServer, markDisconnected, startResume, startTurn, type ChatState } from "./state";
 
 const play = (state: ChatState, ...events: Parameters<typeof applyEvent>[1][]) => events.reduce(applyEvent, state);
@@ -44,9 +44,14 @@ describe("事件 → 状态", () => {
     assert.deepEqual(s.messages.map((m) => [m.role, m.content, m.id]), [["assistant", "上次的回答", "m-9"]]);
   });
 
-  test("other 事件不改变状态", () => {
-    const before = startTurn(emptyChat(), "cm", "hi");
-    assert.equal(applyEvent(before, { ...delta("x"), type: "other", payload: {} } as never), before);
+  test("citation 事件：追加到当前助手消息的引用列表（T-28）", () => {
+    const s = play(startTurn(emptyChat(), "cm", "压缩机不启动怎么办"), citation(), citation({ sourceId: "doc-2", title: "第二课" }));
+    assert.deepEqual(last(s).citations, [citation().payload, citation({ sourceId: "doc-2", title: "第二课" }).payload]);
+  });
+
+  test("replay.card 事件：不改变状态——界面直接用配对的 citation 渲染回放卡片，不重复维护一份", () => {
+    const before = play(startTurn(emptyChat(), "cm", "hi"), citation());
+    assert.deepEqual(applyEvent(before, replayCard()), before);
   });
 
   test("不原地修改：每次返回新对象，旧状态保持不变（React 依赖这一点）", () => {
