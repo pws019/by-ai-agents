@@ -2,8 +2,9 @@
 // 授权与状态机全在后端（education-api 转发给 education-agent 的 ingestion.db，T-26 已经测过），
 // 这里只负责调用和如实展示——跟 TeacherHandoffsPage 是同一个原则，不在前端重新判断一遍"能不能发布"。
 //
-// 导航是目录结构：班期 > 课次，点选而不是粘贴 id——老师不该需要知道或手动复制一个 UUID
-// 才能管理资料（最初版本是这么做的，可用性很差，这是改版）。
+// 布局跟 TeacherHandoffsPage 同一个模式：左栏固定宽度的树形目录（班期 > 课次，点选不是粘贴 id），
+// 右栏是选中课次的资料维护内容，互不重新挂载——跟会话工作台"左边选会话、右边看内容"是同一个原因：
+// 老师在浏览目录找课次的同时，右边刚看的内容不需要消失/重建。
 import { useEffect, useState } from "react";
 import { Icon } from "../components/ui/Icon";
 import {
@@ -21,14 +22,12 @@ const KIND_LABEL: Record<KnowledgeKind, string> = { srt: "SRT 字幕", vtt: "VTT
 const INDEX_STATUS_LABEL: Record<string, string> = { pending: "等待索引", running: "索引中", succeeded: "索引完成", failed: "索引失败" };
 const COHORT_STATUS_LABEL: Record<TeacherCohortSummary["status"], string> = { upcoming: "未开课", running: "进行中", ended: "已结束" };
 
+type Selected = { cohort: TeacherCohortSummary; lesson: ScheduleItem };
+
 export function TeacherKnowledgePage() {
   const [cohorts, setCohorts] = useState<TeacherCohortSummary[] | null>(null);
   const [cohortsError, setCohortsError] = useState<string | null>(null);
-  const [selectedCohort, setSelectedCohort] = useState<TeacherCohortSummary | null>(null);
-
-  const [lessons, setLessons] = useState<ScheduleItem[] | null>(null);
-  const [lessonsError, setLessonsError] = useState<string | null>(null);
-  const [selectedLesson, setSelectedLesson] = useState<ScheduleItem | null>(null);
+  const [selected, setSelected] = useState<Selected | null>(null);
 
   useEffect(() => {
     listTeacherCohorts()
@@ -36,136 +35,124 @@ export function TeacherKnowledgePage() {
       .catch(() => setCohortsError("加载班期列表失败"));
   }, []);
 
-  function openCohort(cohort: TeacherCohortSummary) {
-    setSelectedCohort(cohort);
-    setSelectedLesson(null);
-    setLessons(null);
-    setLessonsError(null);
-    listTeacherLessons(cohort.cohortId)
-      .then(({ items }) => setLessons(items))
-      .catch(() => setLessonsError("加载课次列表失败"));
-  }
-
   return (
-    <div className="h-full overflow-y-auto custom-scrollbar">
-      <div className="p-8 max-w-container-max-width mx-auto flex flex-col gap-6">
-        <Breadcrumb cohort={selectedCohort} lesson={selectedLesson} onHome={() => { setSelectedCohort(null); setSelectedLesson(null); }} onCohort={() => setSelectedLesson(null)} />
+    <div className="h-full flex flex-col">
+      <header className="flex items-center h-16 px-gutter border-b border-outline-variant bg-surface shrink-0">
+        <h1 className="text-headline-sm font-semibold text-on-surface">资料维护</h1>
+      </header>
 
-        {!selectedCohort && (
-          <CohortList cohorts={cohorts} error={cohortsError} onSelect={openCohort} />
-        )}
+      <div className="flex-1 min-h-0 flex">
+        <div className="w-[320px] shrink-0 border-r border-outline-variant h-full overflow-y-auto custom-scrollbar py-4">
+          <CohortTree cohorts={cohorts} error={cohortsError} selectedLessonId={selected?.lesson.lessonId ?? null} onSelectLesson={(cohort, lesson) => setSelected({ cohort, lesson })} />
+        </div>
 
-        {selectedCohort && !selectedLesson && (
-          <LessonList lessons={lessons} error={lessonsError} onSelect={setSelectedLesson} />
-        )}
-
-        {selectedCohort && selectedLesson && (
-          <LessonMaterials cohortName={selectedCohort.name} lesson={selectedLesson} />
-        )}
+        <div className="flex-1 min-w-0 h-full overflow-y-auto custom-scrollbar">
+          {!selected ? (
+            <div className="h-full flex flex-col items-center justify-center gap-2 text-on-surface-variant">
+              <Icon name="menu_book" className="text-[40px] text-outline" />
+              <p className="text-body-sm">从左侧选一节课查看资料</p>
+            </div>
+          ) : (
+            <div className="p-8 max-w-container-max-width mx-auto flex flex-col gap-6">
+              <LessonMaterials key={selected.lesson.lessonId} cohortName={selected.cohort.name} lesson={selected.lesson} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function Breadcrumb({
-  cohort,
-  lesson,
-  onHome,
-  onCohort,
-}: {
-  cohort: TeacherCohortSummary | null;
-  lesson: ScheduleItem | null;
-  onHome: () => void;
-  onCohort: () => void;
-}) {
-  return (
-    <nav aria-label="位置" className="flex items-center gap-1.5 text-label-md text-on-surface-variant flex-wrap">
-      <button type="button" onClick={onHome} className={cohort ? "hover:text-primary hover:underline" : "text-on-surface font-semibold"}>
-        资料维护
-      </button>
-      {cohort && (
-        <>
-          <Icon name="chevron_right" className="text-[16px]" />
-          <button type="button" onClick={onCohort} className={lesson ? "hover:text-primary hover:underline" : "text-on-surface font-semibold"}>
-            {cohort.name}
-          </button>
-        </>
-      )}
-      {lesson && (
-        <>
-          <Icon name="chevron_right" className="text-[16px]" />
-          <span className="text-on-surface font-semibold">{lesson.title}</span>
-        </>
-      )}
-    </nav>
-  );
-}
-
-function CohortList({
+// 树：班期是可展开/收起的节点，第一次展开才去拉这个班期的课次列表并缓存住，收起再展开不用重新请求。
+function CohortTree({
   cohorts,
   error,
-  onSelect,
+  selectedLessonId,
+  onSelectLesson,
 }: {
   cohorts: TeacherCohortSummary[] | null;
   error: string | null;
-  onSelect: (cohort: TeacherCohortSummary) => void;
+  selectedLessonId: string | null;
+  onSelectLesson: (cohort: TeacherCohortSummary, lesson: ScheduleItem) => void;
 }) {
-  if (error) return <p className="text-body-sm text-error">{error}</p>;
-  if (cohorts === null) return <p className="text-body-sm text-on-surface-variant">加载中…</p>;
-  if (cohorts.length === 0) return <p className="text-body-sm text-outline italic">还没有任何班期。</p>;
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [lessonsByCohort, setLessonsByCohort] = useState<Record<string, ScheduleItem[] | "error" | undefined>>({});
+
+  function toggle(cohort: TeacherCohortSummary) {
+    const next = new Set(expanded);
+    if (next.has(cohort.cohortId)) {
+      next.delete(cohort.cohortId);
+    } else {
+      next.add(cohort.cohortId);
+      if (lessonsByCohort[cohort.cohortId] === undefined || lessonsByCohort[cohort.cohortId] === "error") {
+        setLessonsByCohort((prev) => ({ ...prev, [cohort.cohortId]: undefined }));
+        listTeacherLessons(cohort.cohortId)
+          .then(({ items }) => setLessonsByCohort((prev) => ({ ...prev, [cohort.cohortId]: items })))
+          .catch(() => setLessonsByCohort((prev) => ({ ...prev, [cohort.cohortId]: "error" })));
+      }
+    }
+    setExpanded(next);
+  }
+
+  if (error) return <p className="px-4 text-body-sm text-error">{error}</p>;
+  if (cohorts === null) return <p className="px-4 text-body-sm text-on-surface-variant">加载中…</p>;
+  if (cohorts.length === 0) return <p className="px-4 text-body-sm text-outline italic">还没有任何班期。</p>;
 
   return (
-    <ul className="flex flex-col gap-2">
-      {cohorts.map((cohort) => (
-        <li key={cohort.cohortId}>
-          <button
-            type="button"
-            onClick={() => onSelect(cohort)}
-            className="w-full flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-left hover:bg-surface-container-low"
-          >
-            <Icon name="folder" filled className="text-primary" />
-            <div className="min-w-0 flex-1">
-              <p className="text-body-md text-on-surface truncate">{cohort.name}</p>
-              <p className="text-label-sm text-on-surface-variant truncate">{cohort.courseTitle}</p>
-            </div>
-            <span className="text-label-sm text-on-surface-variant shrink-0">{COHORT_STATUS_LABEL[cohort.status]}</span>
-            <Icon name="chevron_right" className="text-outline shrink-0" />
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
+    <ul className="flex flex-col gap-0.5 px-2" aria-label="班期与课次目录">
+      {cohorts.map((cohort) => {
+        const isOpen = expanded.has(cohort.cohortId);
+        const lessons = lessonsByCohort[cohort.cohortId];
+        return (
+          <li key={cohort.cohortId}>
+            <button
+              type="button"
+              onClick={() => toggle(cohort)}
+              aria-expanded={isOpen}
+              className="w-full flex items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-surface-container-low"
+            >
+              <Icon name={isOpen ? "expand_more" : "chevron_right"} className="text-[18px] text-outline shrink-0" />
+              <Icon name={isOpen ? "folder_open" : "folder"} filled className="text-[18px] text-primary shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-body-sm text-on-surface truncate">{cohort.name}</p>
+                <p className="text-label-sm text-on-surface-variant truncate">{cohort.courseTitle}</p>
+              </div>
+              <span className="shrink-0 text-label-sm text-on-surface-variant">{COHORT_STATUS_LABEL[cohort.status]}</span>
+            </button>
 
-function LessonList({
-  lessons,
-  error,
-  onSelect,
-}: {
-  lessons: ScheduleItem[] | null;
-  error: string | null;
-  onSelect: (lesson: ScheduleItem) => void;
-}) {
-  if (error) return <p className="text-body-sm text-error">{error}</p>;
-  if (lessons === null) return <p className="text-body-sm text-on-surface-variant">加载中…</p>;
-  if (lessons.length === 0) return <p className="text-body-sm text-outline italic">这个班期还没有排课。</p>;
-
-  return (
-    <ul className="flex flex-col gap-2">
-      {lessons.map((lesson) => (
-        <li key={lesson.lessonId}>
-          <button
-            type="button"
-            onClick={() => onSelect(lesson)}
-            className="w-full flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-left hover:bg-surface-container-low"
-          >
-            <Icon name="menu_book" filled className="text-primary" />
-            <span className="shrink-0 text-label-sm text-on-surface-variant">#{lesson.order}</span>
-            <span className="flex-1 min-w-0 truncate text-body-md text-on-surface">{lesson.title}</span>
-            <Icon name="chevron_right" className="text-outline shrink-0" />
-          </button>
-        </li>
-      ))}
+            {isOpen && (
+              <ul className="pl-8 flex flex-col gap-0.5 mt-0.5 mb-1">
+                {lessons === undefined ? (
+                  <li className="px-2 py-1 text-label-sm text-on-surface-variant">加载中…</li>
+                ) : lessons === "error" ? (
+                  <li className="px-2 py-1 text-label-sm text-error">加载课次失败</li>
+                ) : lessons.length === 0 ? (
+                  <li className="px-2 py-1 text-label-sm text-outline italic">还没有排课</li>
+                ) : (
+                  lessons.map((lesson) => {
+                    const active = lesson.lessonId === selectedLessonId;
+                    return (
+                      <li key={lesson.lessonId}>
+                        <button
+                          type="button"
+                          onClick={() => onSelectLesson(cohort, lesson)}
+                          className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
+                            active ? "bg-primary-container text-on-primary-container" : "text-on-surface-variant hover:bg-surface-container-low"
+                          }`}
+                        >
+                          <Icon name="menu_book" filled className="text-[16px] shrink-0" />
+                          <span className="shrink-0 text-label-sm opacity-70">#{lesson.order}</span>
+                          <span className="flex-1 min-w-0 truncate text-body-sm">{lesson.title}</span>
+                        </button>
+                      </li>
+                    );
+                  })
+                )}
+              </ul>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
