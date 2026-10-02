@@ -18,6 +18,7 @@ import type {
   ProgressItem,
   ReplayAccess,
   ScheduleItem,
+  TeacherCohortSummary,
   TeacherLessonLookup,
 } from "./types";
 
@@ -149,6 +150,10 @@ export const teacherSendChatMessage = (conversationId: string, body: { clientMes
   request<ConversationMessage>(`/teacher/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify(body) });
 
 // --- 资料维护（T-29）---
+
+export const listTeacherCohorts = () => request<{ items: TeacherCohortSummary[] }>("/teacher/cohorts");
+
+export const listTeacherLessons = (cohortId: string) => request<{ items: ScheduleItem[] }>(`/teacher/lessons?cohortId=${cohortId}`);
 
 export const teacherGetLesson = (lessonId: string) => request<TeacherLessonLookup>(`/teacher/lessons/${lessonId}`);
 

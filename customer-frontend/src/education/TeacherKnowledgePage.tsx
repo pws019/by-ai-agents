@@ -1,25 +1,176 @@
 // 资料维护页面（T-29）：导入新版本字幕/讲义、查看每一版的发布/索引状态、发布或撤回。
 // 授权与状态机全在后端（education-api 转发给 education-agent 的 ingestion.db，T-26 已经测过），
 // 这里只负责调用和如实展示——跟 TeacherHandoffsPage 是同一个原则，不在前端重新判断一遍"能不能发布"。
-import { useState } from "react";
+//
+// 导航是目录结构：班期 > 课次，点选而不是粘贴 id——老师不该需要知道或手动复制一个 UUID
+// 才能管理资料（最初版本是这么做的，可用性很差，这是改版）。
+import { useEffect, useState } from "react";
 import { Icon } from "../components/ui/Icon";
 import {
   ApiError,
   importKnowledgeDocument,
   listKnowledgeDocuments,
+  listTeacherCohorts,
+  listTeacherLessons,
   publishKnowledgeDocument,
-  teacherGetLesson,
   withdrawKnowledgeDocument,
 } from "./api";
-import type { KnowledgeDocument, KnowledgeKind, TeacherLessonLookup } from "./types";
+import type { KnowledgeDocument, KnowledgeKind, ScheduleItem, TeacherCohortSummary } from "./types";
 
 const KIND_LABEL: Record<KnowledgeKind, string> = { srt: "SRT 字幕", vtt: "VTT 字幕", markdown: "Markdown 讲义" };
 const INDEX_STATUS_LABEL: Record<string, string> = { pending: "等待索引", running: "索引中", succeeded: "索引完成", failed: "索引失败" };
+const COHORT_STATUS_LABEL: Record<TeacherCohortSummary["status"], string> = { upcoming: "未开课", running: "进行中", ended: "已结束" };
 
 export function TeacherKnowledgePage() {
-  const [lessonIdInput, setLessonIdInput] = useState("");
-  const [lesson, setLesson] = useState<TeacherLessonLookup | null>(null);
-  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [cohorts, setCohorts] = useState<TeacherCohortSummary[] | null>(null);
+  const [cohortsError, setCohortsError] = useState<string | null>(null);
+  const [selectedCohort, setSelectedCohort] = useState<TeacherCohortSummary | null>(null);
+
+  const [lessons, setLessons] = useState<ScheduleItem[] | null>(null);
+  const [lessonsError, setLessonsError] = useState<string | null>(null);
+  const [selectedLesson, setSelectedLesson] = useState<ScheduleItem | null>(null);
+
+  useEffect(() => {
+    listTeacherCohorts()
+      .then(({ items }) => setCohorts(items))
+      .catch(() => setCohortsError("加载班期列表失败"));
+  }, []);
+
+  function openCohort(cohort: TeacherCohortSummary) {
+    setSelectedCohort(cohort);
+    setSelectedLesson(null);
+    setLessons(null);
+    setLessonsError(null);
+    listTeacherLessons(cohort.cohortId)
+      .then(({ items }) => setLessons(items))
+      .catch(() => setLessonsError("加载课次列表失败"));
+  }
+
+  return (
+    <div className="h-full overflow-y-auto custom-scrollbar">
+      <div className="p-8 max-w-container-max-width mx-auto flex flex-col gap-6">
+        <Breadcrumb cohort={selectedCohort} lesson={selectedLesson} onHome={() => { setSelectedCohort(null); setSelectedLesson(null); }} onCohort={() => setSelectedLesson(null)} />
+
+        {!selectedCohort && (
+          <CohortList cohorts={cohorts} error={cohortsError} onSelect={openCohort} />
+        )}
+
+        {selectedCohort && !selectedLesson && (
+          <LessonList lessons={lessons} error={lessonsError} onSelect={setSelectedLesson} />
+        )}
+
+        {selectedCohort && selectedLesson && (
+          <LessonMaterials cohortName={selectedCohort.name} lesson={selectedLesson} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Breadcrumb({
+  cohort,
+  lesson,
+  onHome,
+  onCohort,
+}: {
+  cohort: TeacherCohortSummary | null;
+  lesson: ScheduleItem | null;
+  onHome: () => void;
+  onCohort: () => void;
+}) {
+  return (
+    <nav aria-label="位置" className="flex items-center gap-1.5 text-label-md text-on-surface-variant flex-wrap">
+      <button type="button" onClick={onHome} className={cohort ? "hover:text-primary hover:underline" : "text-on-surface font-semibold"}>
+        资料维护
+      </button>
+      {cohort && (
+        <>
+          <Icon name="chevron_right" className="text-[16px]" />
+          <button type="button" onClick={onCohort} className={lesson ? "hover:text-primary hover:underline" : "text-on-surface font-semibold"}>
+            {cohort.name}
+          </button>
+        </>
+      )}
+      {lesson && (
+        <>
+          <Icon name="chevron_right" className="text-[16px]" />
+          <span className="text-on-surface font-semibold">{lesson.title}</span>
+        </>
+      )}
+    </nav>
+  );
+}
+
+function CohortList({
+  cohorts,
+  error,
+  onSelect,
+}: {
+  cohorts: TeacherCohortSummary[] | null;
+  error: string | null;
+  onSelect: (cohort: TeacherCohortSummary) => void;
+}) {
+  if (error) return <p className="text-body-sm text-error">{error}</p>;
+  if (cohorts === null) return <p className="text-body-sm text-on-surface-variant">加载中…</p>;
+  if (cohorts.length === 0) return <p className="text-body-sm text-outline italic">还没有任何班期。</p>;
+
+  return (
+    <ul className="flex flex-col gap-2">
+      {cohorts.map((cohort) => (
+        <li key={cohort.cohortId}>
+          <button
+            type="button"
+            onClick={() => onSelect(cohort)}
+            className="w-full flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-left hover:bg-surface-container-low"
+          >
+            <Icon name="folder" filled className="text-primary" />
+            <div className="min-w-0 flex-1">
+              <p className="text-body-md text-on-surface truncate">{cohort.name}</p>
+              <p className="text-label-sm text-on-surface-variant truncate">{cohort.courseTitle}</p>
+            </div>
+            <span className="text-label-sm text-on-surface-variant shrink-0">{COHORT_STATUS_LABEL[cohort.status]}</span>
+            <Icon name="chevron_right" className="text-outline shrink-0" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function LessonList({
+  lessons,
+  error,
+  onSelect,
+}: {
+  lessons: ScheduleItem[] | null;
+  error: string | null;
+  onSelect: (lesson: ScheduleItem) => void;
+}) {
+  if (error) return <p className="text-body-sm text-error">{error}</p>;
+  if (lessons === null) return <p className="text-body-sm text-on-surface-variant">加载中…</p>;
+  if (lessons.length === 0) return <p className="text-body-sm text-outline italic">这个班期还没有排课。</p>;
+
+  return (
+    <ul className="flex flex-col gap-2">
+      {lessons.map((lesson) => (
+        <li key={lesson.lessonId}>
+          <button
+            type="button"
+            onClick={() => onSelect(lesson)}
+            className="w-full flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-left hover:bg-surface-container-low"
+          >
+            <Icon name="menu_book" filled className="text-primary" />
+            <span className="shrink-0 text-label-sm text-on-surface-variant">#{lesson.order}</span>
+            <span className="flex-1 min-w-0 truncate text-body-md text-on-surface">{lesson.title}</span>
+            <Icon name="chevron_right" className="text-outline shrink-0" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function LessonMaterials({ cohortName, lesson }: { cohortName: string; lesson: ScheduleItem }) {
   const [documents, setDocuments] = useState<KnowledgeDocument[] | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -31,36 +182,27 @@ export function TeacherKnowledgePage() {
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
 
-  function refreshDocuments(lessonId: string) {
-    return listKnowledgeDocuments(lessonId)
+  function refreshDocuments() {
+    return listKnowledgeDocuments(lesson.lessonId)
       .then(({ items }) => setDocuments(items))
       .catch(() => setActionError("加载资料列表失败"));
   }
 
-  async function lookupLesson() {
-    const lessonId = lessonIdInput.trim();
-    if (!lessonId) return;
-    setLookupError(null);
-    setLesson(null);
+  useEffect(() => {
     setDocuments(null);
-    try {
-      const found = await teacherGetLesson(lessonId);
-      setLesson(found);
-      await refreshDocuments(found.lessonId);
-    } catch (err) {
-      setLookupError(err instanceof ApiError && err.status === 404 ? "没有找到这个课次 id" : "查找失败，请检查网络后重试");
-    }
-  }
+    void refreshDocuments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lesson.lessonId]);
 
   async function doImport() {
-    if (!lesson || !sourceName.trim() || !rawContent.trim() || importBusy) return;
+    if (!sourceName.trim() || !rawContent.trim() || importBusy) return;
     setImportBusy(true);
     setImportError(null);
     try {
       await importKnowledgeDocument({ lessonId: lesson.lessonId, kind, sourceName: sourceName.trim(), rawContent, visibility });
       setSourceName("");
       setRawContent("");
-      await refreshDocuments(lesson.lessonId);
+      await refreshDocuments();
     } catch (err) {
       setImportError(err instanceof ApiError ? `导入失败（${err.code}）` : "导入失败，请检查网络后重试");
     } finally {
@@ -69,12 +211,12 @@ export function TeacherKnowledgePage() {
   }
 
   async function doPublish(documentId: string) {
-    if (!lesson || busyId) return;
+    if (busyId) return;
     setBusyId(documentId);
     setActionError(null);
     try {
       await publishKnowledgeDocument(documentId);
-      await refreshDocuments(lesson.lessonId);
+      await refreshDocuments();
     } catch (err) {
       setActionError(
         err instanceof ApiError
@@ -88,12 +230,12 @@ export function TeacherKnowledgePage() {
   }
 
   async function doWithdraw(documentId: string) {
-    if (!lesson || busyId) return;
+    if (busyId) return;
     setBusyId(documentId);
     setActionError(null);
     try {
       await withdrawKnowledgeDocument(documentId);
-      await refreshDocuments(lesson.lessonId);
+      await refreshDocuments();
     } catch (err) {
       setActionError(err instanceof ApiError ? `撤回失败（${err.code}）` : "撤回失败，请检查网络后重试");
     } finally {
@@ -102,113 +244,81 @@ export function TeacherKnowledgePage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto custom-scrollbar">
-      <div className="p-8 max-w-container-max-width mx-auto flex flex-col gap-6">
-        <h1 className="text-headline-sm text-on-surface">资料维护</h1>
+    <>
+      <section className="rounded-xl border border-outline-variant bg-surface-container-lowest p-4 flex items-center gap-2">
+        <Icon name="menu_book" filled className="text-primary" />
+        <span className="text-body-md text-on-surface">
+          {cohortName} · {lesson.title}
+        </span>
+      </section>
 
-        <section className="flex flex-col gap-2">
-          <label className="text-label-md text-on-surface-variant" htmlFor="lesson-id-input">
-            课次 id
-          </label>
-          <div className="flex gap-2">
-            <input
-              id="lesson-id-input"
-              value={lessonIdInput}
-              onChange={(e) => setLessonIdInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void lookupLesson()}
-              placeholder="粘贴课次（lesson）id"
-              className="flex-1 rounded-xl border border-outline-variant bg-surface-container-lowest px-3 py-2 text-body-sm focus:outline-none focus:border-primary"
-            />
-            <button
-              type="button"
-              onClick={() => void lookupLesson()}
-              className="rounded-lg bg-primary text-on-primary px-4 py-2 text-label-md hover:opacity-90"
-            >
-              查找
-            </button>
-          </div>
-          {lookupError && <p className="text-body-sm text-error">{lookupError}</p>}
-        </section>
+      {actionError && <p className="text-body-sm text-error">{actionError}</p>}
 
-        {lesson && (
-          <>
-            <section className="rounded-xl border border-outline-variant bg-surface-container-lowest p-4 flex items-center gap-2">
-              <Icon name="menu_book" filled className="text-primary" />
-              <span className="text-body-md text-on-surface">
-                {lesson.cohortName} · {lesson.title}
-              </span>
-            </section>
-
-            {actionError && <p className="text-body-sm text-error">{actionError}</p>}
-
-            <section className="flex flex-col gap-2">
-              <h2 className="text-label-lg font-semibold text-on-surface">已导入的版本</h2>
-              {documents === null ? (
-                <p className="text-body-sm text-on-surface-variant">加载中…</p>
-              ) : documents.length === 0 ? (
-                <p className="text-body-sm text-outline italic">这节课还没导入过资料。</p>
-              ) : (
-                <ul className="flex flex-col gap-2">
-                  {documents.map((d) => (
-                    <DocumentRow key={d.documentId} doc={d} busy={busyId === d.documentId} onPublish={() => void doPublish(d.documentId)} onWithdraw={() => void doWithdraw(d.documentId)} />
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="rounded-xl border border-outline-variant bg-surface-container-lowest p-4 flex flex-col gap-3">
-              <h2 className="text-label-lg font-semibold text-on-surface">导入新版本</h2>
-              <p className="text-label-sm text-outline">
-                粘贴整份字幕/讲义的原始文本（不支持上传文件或抓取 URL）。内容跟当前最新版本完全一样不会产生新版本。
-              </p>
-              <div className="flex gap-2">
-                <select
-                  value={kind}
-                  onChange={(e) => setKind(e.target.value as KnowledgeKind)}
-                  className="rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm"
-                >
-                  {(Object.keys(KIND_LABEL) as KnowledgeKind[]).map((k) => (
-                    <option key={k} value={k}>
-                      {KIND_LABEL[k]}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={visibility}
-                  onChange={(e) => setVisibility(e.target.value as "public" | "private")}
-                  className="rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm"
-                >
-                  <option value="private">仅本班期可见</option>
-                  <option value="public">公开（不限 cohort）</option>
-                </select>
-                <input
-                  value={sourceName}
-                  onChange={(e) => setSourceName(e.target.value)}
-                  placeholder="原始文件名（仅排查用），如 lesson-1.srt"
-                  className="flex-1 rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm"
-                />
-              </div>
-              <textarea
-                value={rawContent}
-                onChange={(e) => setRawContent(e.target.value)}
-                rows={8}
-                placeholder="粘贴原始文本…"
-                className="rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm font-mono"
-              />
-              {importError && <p className="text-body-sm text-error">{importError}</p>}
-              <button
-                type="button"
-                onClick={() => void doImport()}
-                disabled={importBusy || !sourceName.trim() || !rawContent.trim()}
-                className="self-start rounded-lg bg-primary text-on-primary px-4 py-2 text-label-md disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {importBusy ? "导入中…" : "导入"}
-              </button>
-            </section>
-          </>
+      <section className="flex flex-col gap-2">
+        <h2 className="text-label-lg font-semibold text-on-surface">已导入的版本</h2>
+        {documents === null ? (
+          <p className="text-body-sm text-on-surface-variant">加载中…</p>
+        ) : documents.length === 0 ? (
+          <p className="text-body-sm text-outline italic">这节课还没导入过资料。</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {documents.map((d) => (
+              <DocumentRow key={d.documentId} doc={d} busy={busyId === d.documentId} onPublish={() => void doPublish(d.documentId)} onWithdraw={() => void doWithdraw(d.documentId)} />
+            ))}
+          </ul>
         )}
-      </div>
-    </div>
+      </section>
+
+      <section className="rounded-xl border border-outline-variant bg-surface-container-lowest p-4 flex flex-col gap-3">
+        <h2 className="text-label-lg font-semibold text-on-surface">导入新版本</h2>
+        <p className="text-label-sm text-outline">
+          粘贴整份字幕/讲义的原始文本（不支持上传文件或抓取 URL）。内容跟当前最新版本完全一样不会产生新版本。
+        </p>
+        <div className="flex gap-2">
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as KnowledgeKind)}
+            className="rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm"
+          >
+            {(Object.keys(KIND_LABEL) as KnowledgeKind[]).map((k) => (
+              <option key={k} value={k}>
+                {KIND_LABEL[k]}
+              </option>
+            ))}
+          </select>
+          <select
+            value={visibility}
+            onChange={(e) => setVisibility(e.target.value as "public" | "private")}
+            className="rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm"
+          >
+            <option value="private">仅本班期可见</option>
+            <option value="public">公开（不限 cohort）</option>
+          </select>
+          <input
+            value={sourceName}
+            onChange={(e) => setSourceName(e.target.value)}
+            placeholder="原始文件名（仅排查用），如 lesson-1.srt"
+            className="flex-1 rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm"
+          />
+        </div>
+        <textarea
+          value={rawContent}
+          onChange={(e) => setRawContent(e.target.value)}
+          rows={8}
+          placeholder="粘贴原始文本…"
+          className="rounded-lg border border-outline-variant bg-surface px-3 py-2 text-body-sm font-mono"
+        />
+        {importError && <p className="text-body-sm text-error">{importError}</p>}
+        <button
+          type="button"
+          onClick={() => void doImport()}
+          disabled={importBusy || !sourceName.trim() || !rawContent.trim()}
+          className="self-start rounded-lg bg-primary text-on-primary px-4 py-2 text-label-md disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {importBusy ? "导入中…" : "导入"}
+        </button>
+      </section>
+    </>
   );
 }
 

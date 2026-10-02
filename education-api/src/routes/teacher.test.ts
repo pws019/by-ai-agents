@@ -96,6 +96,59 @@ describe("角色权限：学员访问老师端点", () => {
   });
 });
 
+describe("GET /teacher/cohorts", () => {
+  test("没登录：401；学员：403", async () => {
+    assert.equal((await get("/teacher/cohorts")).status, 401);
+    assert.equal((await get("/teacher/cohorts", studentCookie)).status, 403);
+  });
+
+  test("带课程标题，按课程名、开课时间排序（资料维护页面目录第一层用）", async () => {
+    const otherCourseId = await id("INSERT INTO courses (title) VALUES ('AAA 排前面的课') RETURNING id");
+    const otherVersionId = await id("INSERT INTO course_versions (course_id, version) VALUES ($1,1) RETURNING id", [otherCourseId]);
+    await id(
+      "INSERT INTO cohorts (course_id, course_version_id, name, currency, status) VALUES ($1,$2,'目录测试班期','CNY','running') RETURNING id",
+      [otherCourseId, otherVersionId],
+    );
+
+    const res = await get("/teacher/cohorts", teacherCookie);
+    assert.equal(res.status, 200);
+    const { items } = await res.json();
+    const found = items.find((i: { name: string }) => i.name === "目录测试班期");
+    assert.ok(found, "新建的班期应该出现在列表里");
+    assert.equal(found.courseTitle, "AAA 排前面的课");
+    assert.equal(items[0].courseTitle, "AAA 排前面的课", "按课程标题排序，AAA 开头的应该在最前面");
+  });
+});
+
+describe("GET /teacher/lessons", () => {
+  test("没登录：401；学员：403", async () => {
+    assert.equal((await get(`/teacher/lessons?cohortId=${cohortId}`)).status, 401);
+    assert.equal((await get(`/teacher/lessons?cohortId=${cohortId}`, studentCookie)).status, 403);
+  });
+
+  test("没有 cohortId：422", async () => {
+    assert.equal((await get("/teacher/lessons", teacherCookie)).status, 422);
+  });
+
+  test("班期不存在：404", async () => {
+    assert.equal((await get("/teacher/lessons?cohortId=00000000-0000-0000-0000-000000000fff", teacherCookie)).status, 404);
+  });
+
+  test("按 position 排序返回这个班期下的课次（不含别的班期）", async () => {
+    const listCohortId = await id(
+      "INSERT INTO cohorts (course_id, course_version_id, name, currency, status) VALUES ($1,$2,'课次列表测试班期','CNY','running') RETURNING id",
+      [courseId, versionId],
+    );
+    await id("INSERT INTO lessons (cohort_id, title, position) VALUES ($1,'第二课',2) RETURNING id", [listCohortId]);
+    await id("INSERT INTO lessons (cohort_id, title, position) VALUES ($1,'第一课',1) RETURNING id", [listCohortId]);
+
+    const res = await get(`/teacher/lessons?cohortId=${listCohortId}`, teacherCookie);
+    assert.equal(res.status, 200);
+    const { items } = await res.json();
+    assert.deepEqual(items.map((i: { title: string }) => i.title), ["第一课", "第二课"]);
+  });
+});
+
 describe("POST /teacher/cohorts", () => {
   test("courseVersionId 不属于 courseId：404", async () => {
     const otherCourseId = await id("INSERT INTO courses (title) VALUES ('另一门课') RETURNING id");

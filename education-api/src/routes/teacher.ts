@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { requireAuth, requireRole } from "../auth/middleware.js";
 import { isUniqueViolation } from "../db/pgError.js";
 import type { Db } from "../db/pool.js";
-import { cohorts, courseVersions, enrollments, learningProgress, lessons, orders, policies, users } from "../db/schema.js";
+import { cohorts, courses, courseVersions, enrollments, learningProgress, lessons, orders, policies, users } from "../db/schema.js";
 import { errorJson } from "../http/errors.js";
 import { toEnrollment, type EnrollmentRow } from "./me.js";
 
@@ -56,6 +56,21 @@ export function createTeacherRoutes(db: Db): Hono {
       .orderBy(sql`${cohorts.startAt} asc nulls last`);
 
     return c.json({ items: targets.map((t) => ({ cohortId: t.id, name: t.name, startAt: t.startAt })) });
+  });
+
+  // GET /teacher/cohorts —— 全部班期，带课程标题，按课程名、开课时间排序。
+  // 给资料维护页面（T-29 的后续优化）当目录第一层用：老师先选班期，再从班期下选课次，
+  // 不用再手动粘贴 lessonId——之前这个页面完全没有任何"列出有哪些班期/课次"的入口。
+  app.get("/teacher/cohorts", async (c) => {
+    const rows = await db
+      .select({
+        cohortId: cohorts.id, name: cohorts.name, status: cohorts.status, startAt: cohorts.startAt,
+        courseId: courses.id, courseTitle: courses.title,
+      })
+      .from(cohorts)
+      .innerJoin(courses, eq(courses.id, cohorts.courseId))
+      .orderBy(courses.title, sql`${cohorts.startAt} desc nulls last`);
+    return c.json({ items: rows });
   });
 
   // POST /teacher/cohorts —— 创建班期。courseVersionId 必须真的属于 courseId（不只是存在），
@@ -118,6 +133,18 @@ export function createTeacherRoutes(db: Db): Hono {
       if (isUniqueViolation(err)) return errorJson(c, 422, "VALIDATION_ERROR", "该课程已有当期在售班期");
       throw err;
     }
+  });
+
+  // GET /teacher/lessons?cohortId= —— 某个班期下的全部课次，按顺序排列。目录结构的第二层。
+  app.get("/teacher/lessons", async (c) => {
+    const cohortId = c.req.query("cohortId");
+    if (!cohortId) return errorJson(c, 422, "VALIDATION_ERROR", "cohortId 必填");
+
+    const [cohort] = await db.select({ id: cohorts.id }).from(cohorts).where(eq(cohorts.id, cohortId));
+    if (!cohort) return errorJson(c, 404, "NOT_FOUND", "班期不存在");
+
+    const rows = await db.select().from(lessons).where(eq(lessons.cohortId, cohortId)).orderBy(lessons.position);
+    return c.json({ items: rows.map(toLesson) });
   });
 
   // POST /teacher/lessons —— 在某个班期下新建一节课。同一班期内 position 不能重复

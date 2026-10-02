@@ -356,6 +356,23 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
   /teacher/cohorts:
+    get:
+      tags: [teacher]
+      operationId: listTeacherCohorts
+      summary: 全部班期，带课程标题（T-29 资料维护页面目录第一层：先选班期）
+      responses:
+        '200':
+          description: 按课程标题、开课时间排序
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/TeacherCohortSummary'}
+        '403': {$ref: '#/components/responses/Forbidden'}
     post:
       tags: [teacher]
       operationId: teacherCreateCohort
@@ -396,6 +413,27 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/Invalid'}
   /teacher/lessons:
+    get:
+      tags: [teacher]
+      operationId: listTeacherLessons
+      summary: 某个班期下的全部课次，按顺序排列（T-29 资料维护页面目录第二层）
+      parameters:
+        - {name: cohortId, in: query, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: 按 position 排序
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Lesson'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/Invalid'}
     post:
       tags: [teacher]
       operationId: teacherCreateLesson
@@ -1211,6 +1249,16 @@ components:
         lessonId: {type: string, format: uuid}
         status: {type: string, enum: [not_started, in_progress, completed]}
         source: {type: string, enum: [manual, import]}
+    TeacherCohortSummary:
+      type: object
+      required: [cohortId, name, status, startAt, courseId, courseTitle]
+      properties:
+        cohortId: {type: string, format: uuid}
+        name: {type: string}
+        status: {type: string, enum: [upcoming, running, ended]}
+        startAt: {type: string, format: date-time, nullable: true}
+        courseId: {type: string, format: uuid}
+        courseTitle: {type: string}
     Cohort:
       type: object
       required: [cohortId, courseId, courseVersionId, name, startAt, priceCents, currency, status, isCurrentSale]

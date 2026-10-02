@@ -146,6 +146,16 @@ export type ConversationMessage = {
 // 只需要知道"这一版发没发布、索引到哪一步了"，不需要逐条片段的内容（那是检索结果要展示的东西）。
 export type TeacherLessonLookup = { lessonId: string; title: string; cohortId: string; cohortName: string };
 
+// 资料维护页面的目录结构（班期 > 课次），不是学员自己的那个 CohortSummary（没有课程标题）。
+export type TeacherCohortSummary = {
+  cohortId: string;
+  name: string;
+  status: "upcoming" | "running" | "ended";
+  startAt: string | null;
+  courseId: string;
+  courseTitle: string;
+};
+
 export type KnowledgeKind = "srt" | "vtt" | "markdown";
 export type IndexStatus = "pending" | "running" | "succeeded" | "failed" | null;
 
