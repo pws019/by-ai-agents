@@ -69,6 +69,23 @@ export function createConversationRoutes(db: Db, deps: ChatDeps = {}): Hono {
     return c.json({ items: rows.map((r) => ({ id: r.id, mode: r.mode, createdAt: r.createdAt, title: titleOf(r.firstMessage) })) });
   });
 
+  // 硬删除：物理从库里去掉这条会话（及其 messages/runs/handoffs，见 0012 迁移的级联设置）。
+  // 和别的业务记录（course_versions/policies/knowledge_documents……）不一样，会话是学员自己的聊天
+  // 记录，不是需要保留审计轨迹的业务凭证，所以这里是真删除，不是软删除/标记撤回。
+  // applications.source_run_id 会在数据库层被置空（ON DELETE SET NULL）：申请本身是业务记录，
+  // 不因为学员删了当时的聊天会话就消失，只是丢掉"当时是哪次运行起草的"这条追溯链接。
+  app.delete("/conversations/:conversationId", requireAuth, student, async (c) => {
+    const actor = c.get("actor")!;
+    const conversationId = c.req.param("conversationId")!;
+    const conversation = await findOwnedConversation(db, conversationId, actor.id);
+    if (!conversation) return errorJson(c, 404, "NOT_FOUND", "找不到这个会话");
+    // latestRun 会先把租约过期的 running 判成失败，这里才不会被一个其实早已死掉的 run 挡住删除。
+    const run = await latestRun(db, conversationId);
+    if (run?.status === "running") return errorJson(c, 409, "RUN_IN_PROGRESS", "会话正在处理中，请稍后再删除");
+    await db.delete(conversations).where(eq(conversations.id, conversationId));
+    return c.body(null, 204);
+  });
+
   // 断线后的恢复入口：已存消息 + 最近一次运行的状态（含"租约过期 → 失败"的判定，见 latestRun）。
   // 不传 after 是完整快照（首次打开/断线重连）；轮询时带上目前看到的最后一条消息 id 作为 after，
   // 只拿增量——排队/接管期间前端要反复轮询才能看到对方的消息，不加这个游标每次都要重传整个窗口。

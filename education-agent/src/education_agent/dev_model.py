@@ -21,6 +21,7 @@ from .model.base import Message, ModelReply, OnText, ToolCall
 APPLICATION_WORDS = ("退费", "转班", "换班")
 STATUS_WORDS = ("怎么样", "进度", "状态", "到哪", "批了", "批准")
 HANDOFF_WORDS = ("转人工", "人工客服", "找老师", "找真人", "真人客服")
+CONTENT_WORDS = ("讲了什么", "讲的是什么", "内容是什么", "笔记", "回放")
 
 
 def is_application_request(text: str) -> bool:
@@ -109,6 +110,8 @@ def _query_step(turn: _Turn) -> ToolCall | str:
         return _offering_text(turn.data("getCurrentOffering")) if "getCurrentOffering" in turn.results else turn.call("getCurrentOffering", {})
     if "申请" in t or any(w in t for w in APPLICATION_WORDS):  # 走到这里的"申请/退费/转班"都是在问状态
         return _applications_text(turn.data("getApplicationStatus")) if "getApplicationStatus" in turn.results else turn.call("getApplicationStatus", {})
+    if any(w in t for w in CONTENT_WORDS):  # 问课程内容/回放，T-27 加的工具，不走报名链路
+        return turn.call("searchKnowledge", {"query": t}) if "searchKnowledge" not in turn.results else _knowledge_text(turn.data("searchKnowledge"))
 
     wanted = next((tool for words, tool in (
         (("课表", "课程表", "上课", "下节课"), "getMySchedule"),
@@ -187,6 +190,14 @@ def _targets_text(data: dict) -> str:
     if not items:
         return "目前没有可以转入的班期。"
     return "可以申请转入的班期有：" + "、".join(t["name"] for t in items) + "。（是否批准要等老师处理。）"
+
+
+def _knowledge_text(data: dict) -> str:
+    # AC-018：没搜到就老实说没搜到，不替模型编一句"可能在第几课"之类的猜测。
+    if not data.get("found"):
+        return "没有找到相关的课程内容。"
+    quotes = "；".join(f"「{c['lessonTitle']}」提到：{c['text']}" for c in data.get("citations", []))
+    return f"根据课程内容，{quotes}"
 
 
 def _offering_text(data: dict) -> str:

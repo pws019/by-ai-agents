@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 
 import { useSessionsContext } from "../../context/SessionsContext";
 import { useChat } from "../../hooks/useChat";
+import type { ChatState } from "../../lib/chat/state";
 import { runningToolLabel } from "../../lib/chat/toolLabels";
 import { ChatHeader } from "./ChatHeader";
 import { ChatInput } from "./ChatInput";
@@ -12,9 +13,14 @@ import { WelcomeState } from "./WelcomeState";
 
 type ChatPanelProps = {
   conversationId?: string;
+  // "/" 和 "/sessions/:id" 是路由树里两个不同的 Route，这个组件在两者之间切换时会整个重新挂载——
+  // 新会话第一轮跑完后跳转过来的这个实例，要从这里（路由 state 转交过来，见 SessionRoute）拿到
+  // 上一个实例跑完的状态当初始值，而不是从空白状态开始向服务端重新拉一次（会把 citation/
+  // replay.card 这类不落库的字段冲掉，见 useChat.ts 的 seedState 说明）。
+  seedState?: ChatState;
 };
 
-export function ChatPanel({ conversationId }: ChatPanelProps) {
+export function ChatPanel({ conversationId, seedState }: ChatPanelProps) {
   const navigate = useNavigate();
   const { conversations, refresh: refreshSessions } = useSessionsContext();
   const [prefill, setPrefill] = useState<string | undefined>(undefined);
@@ -23,11 +29,13 @@ export function ChatPanel({ conversationId }: ChatPanelProps) {
 
   const { state, loadingHistory, busy, sendMessage, retryLast, confirm, requestHandoff } = useChat({
     conversationId,
-    onCreated: (newId) => {
+    seedState,
+    onCreated: (newId, finalState) => {
       // 新会话这一轮已经完整结束（消息也在本地状态里了），先让侧边栏刷新，再跳转——
       // 太早跳转会让面板重新挂载去拉历史，与还没跑完的这一轮竞态。
+      // 把 finalState 通过路由 state 带过去：新挂载出来的那个实例靠它做种子状态，见上面 seedState 的注释。
       void refreshSessions();
-      navigate(`/sessions/${newId}`);
+      navigate(`/sessions/${newId}`, { state: { seedState: finalState } });
     },
   });
 

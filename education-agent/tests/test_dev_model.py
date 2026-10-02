@@ -95,6 +95,33 @@ async def test_other_query_kinds_use_the_expected_tool_and_answer_from_data(text
     assert expect in out["reply"], out["reply"]
 
 
+async def test_content_question_calls_search_knowledge_without_touching_enrollment():
+    # searchKnowledge 自己从 API 拿 cohort 范围（retrieval/scope.py），不走"先查报名"链路——
+    # 跟 getMySchedule 等工具的既有套路不一样，这里断言完全没有发出 enrollments 请求。
+    api = Api()
+    out = await say(make(api), "第二课讲了什么内容？")
+    assert api.paths() == []
+    # 静态 TOOL_SPECS 里的 searchKnowledge 是占位实现（没有真实 embedder/store 可用），
+    # 诚实返回 found=False，AC-018 的"无依据就说没有"在 mock 模型这一层也要如实转述。
+    assert out["reply"] == "没有找到相关的课程内容。"
+
+
+async def test_content_question_with_hits_quotes_the_citation_text():
+    from education_agent.tools.contracts import SearchKnowledgeArgs
+    from education_agent.tools.spec import ToolOutput, ToolSpec
+
+    async def fake_search(_api, _args):
+        return ToolOutput(data={"found": True, "citations": [
+            {"lessonId": "L1", "lessonTitle": "第 2 课：模型训练入门", "text": "本节课讲解了微调的基本流程", "startMs": 1000, "endMs": 5000}
+        ]})
+
+    specs = TOOL_SPECS + (ToolSpec("searchKnowledge", "search", SearchKnowledgeArgs, fake_search),)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(Api()), base_url="http://api.test")
+    graph = build_student_graph(DemoModel(stream_delay=0), ToolRuntime(specs, http), InMemorySaver())
+    out = await say(graph, "第二课讲了什么内容？")
+    assert "「第 2 课：模型训练入门」提到：本节课讲解了微调的基本流程" in out["reply"]
+
+
 async def test_reply_is_streamed_in_pieces_that_add_up_to_the_final_text():
     graph = make(Api(), chunk_size=3)
     ctx = RunContext("s1", "student", "req-1", int(time.time()) + 60, "TOKEN")

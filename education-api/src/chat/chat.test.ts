@@ -354,9 +354,64 @@ describe("会话接口", () => {
   test("Agent 通道不能读写会话（会话是用户与 BFF 之间的东西）", async () => {
     const conversationId = await newConversation(studentId);
     const token = signInternalContext({ actorId: studentId, role: "student", requestId: "r" }, "chat-test-secret");
-    for (const [method, path] of [["GET", "/conversations"], ["POST", "/conversations"], ["GET", `/conversations/${conversationId}/messages`]] as const) {
+    for (const [method, path] of [
+      ["GET", "/conversations"], ["POST", "/conversations"], ["GET", `/conversations/${conversationId}/messages`], ["DELETE", `/conversations/${conversationId}`],
+    ] as const) {
       const res = await app.request(`/api/v1${path}`, { method, headers: { "X-Actor-Context": token } });
       assert.equal(res.status, 403, `${method} ${path}`);
     }
+  });
+});
+
+describe("删除会话", () => {
+  const call = (method: string, path: string, cookie?: string) =>
+    app.request(`/api/v1${path}`, { method, headers: { ...(cookie ? { Cookie: cookie } : {}), Origin: ORIGIN } });
+
+  test("硬删除：连带 messages/runs/handoffs 一起物理清掉，列表里也不再出现", async () => {
+    const conversationId = await newConversation();
+    const r = await startMessageRun(db, { conversationId, clientMessageId: "1", text: "你好" });
+    if (r.kind !== "started") return assert.fail();
+    await completeRun(db, r.runId, "你好呀");
+    await q("INSERT INTO handoffs (conversation_id, status) VALUES ($1, 'queued')", [conversationId]);
+
+    assert.equal((await call("DELETE", `/conversations/${conversationId}`, studentCookie)).status, 204);
+
+    assert.equal(await count("SELECT count(*) n FROM conversations WHERE id = $1", [conversationId]), 0);
+    assert.equal(await count("SELECT count(*) n FROM messages WHERE conversation_id = $1", [conversationId]), 0);
+    assert.equal(await count("SELECT count(*) n FROM runs WHERE conversation_id = $1", [conversationId]), 0);
+    assert.equal(await count("SELECT count(*) n FROM handoffs WHERE conversation_id = $1", [conversationId]), 0);
+    const list = (await (await call("GET", "/conversations", studentCookie)).json()).items.map((c: { id: string }) => c.id);
+    assert.ok(!list.includes(conversationId));
+  });
+
+  test("正在生成中的会话不能删：409，数据原样保留", async () => {
+    const conversationId = await newConversation();
+    const r = await startMessageRun(db, { conversationId, clientMessageId: "1", text: "你好" });
+    if (r.kind !== "started") return assert.fail();
+
+    assert.equal((await call("DELETE", `/conversations/${conversationId}`, studentCookie)).status, 409);
+    assert.equal(await count("SELECT count(*) n FROM conversations WHERE id = $1", [conversationId]), 1);
+  });
+
+  test("租约已过期的运行不挡删除（早就该判失败了，不是真的还在跑）", async () => {
+    const conversationId = await newConversation();
+    const r = await startMessageRun(db, { conversationId, clientMessageId: "1", text: "你好" });
+    if (r.kind !== "started") return assert.fail();
+    await expireLease(r.runId);
+
+    assert.equal((await call("DELETE", `/conversations/${conversationId}`, studentCookie)).status, 204);
+  });
+
+  test("别人的会话和不存在的会话一样：404，不会被删掉", async () => {
+    const conversationId = await newConversation(studentId);
+    assert.equal((await call("DELETE", `/conversations/${conversationId}`, otherCookie)).status, 404);
+    assert.equal(await count("SELECT count(*) n FROM conversations WHERE id = $1", [conversationId]), 1, "别人无权删，数据还在");
+    assert.equal((await call("DELETE", "/conversations/00000000-0000-0000-0000-00000000dead", studentCookie)).status, 404);
+  });
+
+  test("未登录 401；老师角色 403", async () => {
+    const conversationId = await newConversation(studentId);
+    assert.equal((await call("DELETE", `/conversations/${conversationId}`)).status, 401);
+    assert.equal((await call("DELETE", `/conversations/${conversationId}`, teacherCookie)).status, 403);
   });
 });

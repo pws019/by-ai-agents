@@ -36,6 +36,8 @@ async function stream(path: string, body?: unknown): Promise<AsyncIterable<Strea
 
 export const createConversation = () => json<ConversationSummary>("/conversations", { method: "POST" });
 export const listConversations = () => json<{ items: ConversationSummary[] }>("/conversations");
+// 硬删除：404（别人的/不存在）、409（正在生成中）都是 ApiError，调用方按 code 区分。
+export const deleteConversation = (id: string) => json<void>(`/conversations/${id}`, { method: "DELETE" });
 
 export const chatApi: ChatApi = {
   sendMessage: (conversationId, body) => stream(`/conversations/${conversationId}/messages`, body),

@@ -196,6 +196,21 @@ describe("草稿来源与待确认草稿", () => {
   });
 });
 
+describe("删除会话", () => {
+  test("删掉当时起草这张申请的会话：source_run_id 置空，申请本身还在（不是业务记录，不跟着级联删除）", async () => {
+    const conversationId = await newConversation();
+    const runId = await newRun(conversationId);
+    const draft = await (await agentDraft(studentId, runId, await newEnrollment(studentId))).json();
+    assert.equal(await sourceOf(draft.id), runId);
+    await q("UPDATE runs SET status = 'completed', finished_at = now() WHERE id = $1", [runId]); // 不然这次运行还在跑，删除会被 409 挡住
+
+    assert.equal((await web("DELETE", `/conversations/${conversationId}`)).status, 204);
+
+    assert.equal(await sourceOf(draft.id), null);
+    assert.equal((await q("SELECT status FROM applications WHERE id = $1", [draft.id])).rows[0]?.status, "draft");
+  });
+});
+
 describe("会话标题", () => {
   const titles = async () => Object.fromEntries((await (await web("GET", "/conversations")).json()).items.map((c: { id: string; title: string | null }) => [c.id, c.title]));
   const addUserMessage = (conversationId: string, text: string, clientId: string, offsetSeconds: number) =>

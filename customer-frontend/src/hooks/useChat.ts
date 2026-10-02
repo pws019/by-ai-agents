@@ -8,15 +8,23 @@ const HANDOFF_POLL_MS = 4000;
 
 type UseChatOptions = {
   conversationId: string | undefined;
+  // "待创建"态的第一轮跑完之后，路由层会把 URL 从 "/" 换成 "/sessions/:id"——但 "/" 和
+  // "/sessions/:id" 是路由树里两个不同的 Route（IndexRoute/SessionRoute），切换会让 ChatPanel
+  // 连同这个 hook 整个重新挂载，不是同一个实例收到新 prop。本地刚流完的状态（尤其是 citation/
+  // replay.card：这两类事件不落库，见 lib/chat/state.ts）如果不想办法带过去，新挂载出来的实例
+  // 只能从服务端重新拉，拉到的东西天然没有这两类字段。seedState 就是用来带过去的：调用方
+  // （ChatPanel）通过 react-router 的 navigate(path, { state }) 把这一轮跑完的 state 原样带到
+  // 新 URL，新挂载的 hook 用它做初始状态，不用再向服务端请求一次。
+  seedState?: ChatState;
   // conversationId 为空（"待创建"态）时发第一条消息会先建会话；建好、这一轮也完整结束之后，用这个回调通知路由层跳转。
-  onCreated: (conversationId: string) => void;
+  onCreated: (conversationId: string, finalState: ChatState) => void;
 };
 
 // 聊天页面的 hook：只负责把"流程层（lib/chat/session）产生的状态"接进 React，自己没有业务逻辑。
 // 所有流程都是异步生成器；这里用一个递增的 token 判断"这个流程还是不是当前的"——
 // 切换会话/离开页面后，旧流程后续产生的状态会被直接丢弃，不会写进新会话的界面。
-export function useChat({ conversationId, onCreated }: UseChatOptions) {
-  const [state, setState] = useState<ChatState>(emptyChat());
+export function useChat({ conversationId, seedState, onCreated }: UseChatOptions) {
+  const [state, setState] = useState<ChatState>(() => seedState ?? emptyChat());
   const [loadingHistory, setLoadingHistory] = useState(false);
   // 已经建好、但这一轮还没结束所以还没跳转的会话（重试/确认时要复用，不能再建一个）。
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -25,6 +33,12 @@ export function useChat({ conversationId, onCreated }: UseChatOptions) {
   const flow = useRef(0);
   // 轮询的增量游标：只在"本地消息列表确定和服务端一致"时才可信，见下面 update() 和轮询 effect 的说明。
   const lastPolledId = useRef<string | null>(null);
+  // 记"seedState 对应哪个会话"，而不是"有没有 seedState 这件事本身"——后者如果用一个"读一次就清掉"
+  // 的标记来做，会在 StrictMode（开发环境会把 effect 的 setup 多调用一次来测试副作用是否幂等）下出问题：
+  // 第一次调用把标记清掉、跳过拉取，第二次（StrictMode 的重放）发现标记已经没了，就会照常去拉一次，
+  // 照样把 citation 冲掉——现象跟完全没修一样。这里只在挂载时读一次 conversationId 存下来，effect 里
+  // 只读不写，调用多少次结果都一样。
+  const seededConversationId = useRef(seedState != null ? conversationId : null);
 
   const update = useCallback((s: ChatState, opts?: { fromPoll?: boolean }) => {
     stateRef.current = s;
@@ -41,6 +55,12 @@ export function useChat({ conversationId, onCreated }: UseChatOptions) {
     setPendingId(null);
     if (!conversationId) {
       update(emptyChat());
+      setLoadingHistory(false);
+      return;
+    }
+    if (conversationId === seededConversationId.current) {
+      // 初始状态已经是 seedState（上一个路由实例跑完一轮之后交过来的），不用再问服务端一次——
+      // 问了也只会把 citation/replay.card 冲掉，其它字段服务端那份也不会比本地这份更新。
       setLoadingHistory(false);
       return;
     }
@@ -119,7 +139,9 @@ export function useChat({ conversationId, onCreated }: UseChatOptions) {
           setPendingId(id);
         }
         const finished = await drive(sendTurn(chatApi, id, stateRef.current, trimmed, newClientMessageId()), token);
-        if (isNew && finished) onCreated(id);
+        // 把这一轮跑完的最终状态一起带给调用方：新 URL 挂载出来的那个实例要拿它当 seedState，
+        // 不是只告诉调用方"建好了，id 是什么"。
+        if (isNew && finished) onCreated(id, stateRef.current);
       } catch {
         if (flow.current === token) update({ ...withNotice(stateRef.current, "发送失败，请检查网络后重试。"), phase: "idle" });
       }

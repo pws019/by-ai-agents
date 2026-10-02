@@ -659,6 +659,17 @@ paths:
                   items:
                     type: array
                     items: {$ref: '#/components/schemas/Conversation'}
+  /conversations/{conversationId}:
+    delete:
+      tags: [chat]
+      operationId: deleteConversation
+      summary: 硬删除本人的会话（连同消息/运行/接管记录一起物理清掉，不是软删除）；正在生成中的会话要先等它结束
+      parameters:
+        - {$ref: '#/components/parameters/ConversationId'}
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /conversations/{conversationId}/messages:
     get:
       tags: [chat]
